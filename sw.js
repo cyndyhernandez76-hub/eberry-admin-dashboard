@@ -10,7 +10,7 @@
  * The cache name is bumped on every deploy via {{BUILD_ID}} substitution at
  * build time. Old caches are pruned in 'activate'.
  */
-const CACHE_VERSION = 'eberry-v2-2026-04-30-replay-fix';
+const CACHE_VERSION = 'eberry-v3-2026-04-30-cooldown';
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const ASSET_CACHE = `${CACHE_VERSION}-assets`;
 const SHELL_URL = '/eberry-admin-dashboard/index.html';
