@@ -21,6 +21,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .topbar{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;gap:12px;flex-wrap:wrap}
 .topbar-left h1{font-size:21px;font-weight:700;color:var(--text)}
 .topbar-left p{font-size:13px;color:var(--text3);margin-top:2px}
+.btn-launcher{display:inline-flex;align-items:center;gap:6px;background:var(--sage-light);color:var(--sage-dark);border:1px solid var(--sage-border);padding:0 12px;height:30px;border-radius:var(--radius);font-size:12px;font-weight:500;text-decoration:none;margin-bottom:6px}
+.btn-launcher:hover{background:#dde8df}
 .topbar-right{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 button{cursor:pointer;font-family:inherit;font-size:14px;border-radius:var(--radius);transition:all .15s}
 .btn-primary{background:var(--sage);color:#fff;border:none;padding:0 16px;height:36px;font-weight:500}
@@ -276,6 +278,7 @@ tr[data-po]:hover td{background:#eef7ef}
 
 <div class="topbar">
 <div class="topbar-left">
+<a href="../" class="btn-launcher" title="Back to eBerry launcher">&#8592; eBerry launcher</a>
 <h1>&#127807; Purchase Order Tracker</h1>
 <p id="subText">Loading...</p>
 </div>
