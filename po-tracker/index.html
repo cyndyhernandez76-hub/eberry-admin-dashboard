@@ -325,7 +325,7 @@ tr[data-po]:hover td{background:#eef7ef}
 <div class="controls">
 <div class="search-wrap">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-<input type="text" id="searchInput" placeholder="Search PO#, vendor, description..." oninput="go()">
+<input type="text" id="searchInput" placeholder="Search PO#, vendor, description, parts..." oninput="go()">
 </div>
 <select id="yearFilter" onchange="go()">
 <option value="">All years</option>
@@ -1241,7 +1241,8 @@ var grp = document.getElementById('groupFilter').value;
 var sf = document.getElementById('statusFilter').value;
 return data.filter(function(r) {
 if (q && !(r.po||'').toLowerCase().includes(q) && !(r.vendor||'').toLowerCase().includes(q) &&
-!(r.desc||'').toLowerCase().includes(q) && !(r.notes||'').toLowerCase().includes(q)) return false;
+!(r.desc||'').toLowerCase().includes(q) && !(r.notes||'').toLowerCase().includes(q) &&
+!((r.workOrder||[]).some(function(w){return (w||'').toLowerCase().includes(q);}))) return false;
 if (yr && r.year !== yr) return false;
 if (grp && r.group !== grp) return false;
 if (activeTab !== 'All' && r.cat !== activeTab) return false;
