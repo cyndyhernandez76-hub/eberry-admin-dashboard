@@ -1,0 +1,1 @@
+import{t as e}from"./supabase-DTvb0HUp.js";export{e as supabase};
