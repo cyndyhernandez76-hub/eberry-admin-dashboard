@@ -1,0 +1,1409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBerry — Missing Email Bulk Edit</title>
+<link rel="icon" href="/eberry-admin-dashboard/favicon.svg">
+<meta name="theme-color" content="#01696F">
+<style>
+/* ── Reset & Base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  background: #F7F6F2;
+  color: #28251D;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ── Design tokens (Nexus palette) ── */
+:root {
+  --bg:        #F7F6F2;
+  --surface:   #FFFFFF;
+  --surface-alt: #F9F8F5;
+  --border:    #D4D1CA;
+  --text:      #28251D;
+  --text-muted:#7A7974;
+  --text-faint:#BAB9B4;
+  --primary:   #01696F;
+  --primary-hv:#0C4E54;
+  --error:     #A12C7B;
+  --warning:   #964219;
+  --success:   #437A22;
+  --radius:    7px;
+  --radius-lg: 11px;
+  --shadow:    0 1px 4px rgba(0,0,0,.08);
+}
+
+/* ── Layout ── */
+.page-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.page-header-left { display: flex; align-items: center; gap: 12px; }
+.page-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.page-subtitle { font-size: 12px; color: var(--text-muted); }
+.back-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.back-link:hover { color: var(--primary-hv); }
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+.container { max-width: 1400px; margin: 0 auto; padding: 16px 20px; }
+
+/* ── Buttons ── */
+button { cursor: pointer; font-family: inherit; font-size: 13px; border-radius: var(--radius); transition: all .15s; }
+.btn-primary {
+  background: var(--primary); color: #fff; border: none;
+  padding: 0 16px; height: 34px; font-weight: 600;
+}
+.btn-primary:hover { background: var(--primary-hv); }
+.btn-primary:disabled { opacity: .45; cursor: default; }
+.btn-secondary {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); padding: 0 13px; height: 34px;
+}
+.btn-secondary:hover { background: var(--surface-alt); }
+.btn-ghost {
+  background: none; border: none; color: var(--primary); padding: 0 8px; height: 28px; font-size: 12px;
+}
+.btn-ghost:hover { color: var(--primary-hv); text-decoration: underline; }
+.btn-save-all {
+  background: #FFF3E0; color: #964219; border: 1px solid #F0C070;
+  padding: 0 14px; height: 34px; font-weight: 600; font-size: 13px;
+  display: none;
+}
+.btn-save-all.visible { display: inline-flex; align-items: center; gap: 6px; }
+.btn-save-all:hover { background: #FFE0B2; }
+
+/* ── Stat bar ── */
+.stat-bar {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px; min-width: 130px;
+}
+.stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+.stat-value { font-size: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-value.accent { color: var(--primary); }
+
+/* ── CSV paste panel ── */
+.csv-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); margin-bottom: 14px; overflow: hidden;
+}
+.csv-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; cursor: pointer; user-select: none;
+}
+.csv-panel-header:hover { background: var(--surface-alt); }
+.csv-panel-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.csv-panel-subtitle { font-size: 12px; color: var(--text-muted); margin-left: 8px; }
+.csv-chevron { font-size: 12px; color: var(--text-muted); transition: transform .2s; }
+.csv-chevron.open { transform: rotate(180deg); }
+.csv-body { display: none; padding: 12px 14px 14px; border-top: 1px solid var(--border); }
+.csv-body.open { display: block; }
+.csv-format-hint {
+  font-size: 11px; color: var(--text-muted); margin-bottom: 8px;
+  background: var(--surface-alt); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 7px 10px; font-family: monospace;
+  line-height: 1.7;
+}
+.csv-row { display: flex; gap: 8px; align-items: flex-start; }
+.csv-textarea {
+  flex: 1; height: 90px; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; font-size: 12px; font-family: monospace; resize: vertical;
+  color: var(--text); background: var(--surface); outline: none;
+}
+.csv-textarea:focus { border-color: var(--primary); }
+.csv-actions { display: flex; flex-direction: column; gap: 6px; }
+
+/* ── Filter bar ── */
+.filter-bar {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 12px 14px; margin-bottom: 12px;
+}
+.filter-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.filter-group { display: flex; flex-direction: column; gap: 4px; }
+.filter-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+.filter-pills { display: flex; gap: 4px; flex-wrap: wrap; }
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-muted);
+  cursor: pointer; user-select: none; transition: all .12s;
+}
+.pill:hover { border-color: var(--primary); color: var(--primary); }
+.pill.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.filter-input {
+  height: 32px; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0 10px; font-size: 13px; color: var(--text); background: var(--surface);
+  outline: none; font-family: inherit; min-width: 180px;
+}
+.filter-input:focus { border-color: var(--primary); }
+.filter-select {
+  height: 32px; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0 8px; font-size: 13px; color: var(--text); background: var(--surface);
+  outline: none; font-family: inherit; min-width: 150px;
+}
+.filter-select:focus { border-color: var(--primary); }
+.filter-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer; height: 32px; }
+.toggle-switch {
+  position: relative; display: inline-block; width: 36px; height: 20px;
+}
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; inset: 0; background: var(--border); border-radius: 20px;
+  transition: background .2s; cursor: pointer;
+}
+.toggle-slider::before {
+  content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; top: 3px; left: 3px; transition: transform .2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.2);
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--primary); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+.filter-result-count { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+
+/* ── Table ── */
+.table-wrap {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; }
+thead { background: var(--surface-alt); }
+th {
+  padding: 9px 10px; text-align: left; font-size: 11px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em;
+  border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+th:hover { color: var(--text); }
+th.sorted { color: var(--primary); }
+.sort-arrow { margin-left: 3px; opacity: .5; }
+td {
+  padding: 7px 10px; border-bottom: 1px solid #EDEBE5;
+  vertical-align: middle; max-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #F9F8F4; }
+tr.dirty td:first-child::after {
+  content: '●';
+  color: var(--warning);
+  font-size: 8px;
+  vertical-align: super;
+  margin-left: 2px;
+}
+
+/* ── Badges ── */
+.badge {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  padding: 2px 6px; border-radius: 20px; white-space: nowrap;
+}
+.badge-active    { background: #D1ECE9; color: #01696F; }
+.badge-on_leave  { background: #FFF0C0; color: #7A5000; }
+.badge-pending_arrival { background: #E3EAF9; color: #2A4D99; }
+.badge-abscond   { background: #FDEDEF; color: #8B2020; }
+.badge-inactive  { background: #EEECEA; color: #5A5855; }
+.badge-terminated{ background: #EEECEA; color: #5A5855; }
+.badge-departed  { background: #EEECEA; color: #5A5855; }
+.badge-archived  { background: #EEECEA; color: #5A5855; }
+.badge-in_house  { background: #E0EFFE; color: #1A4D80; }
+.badge-cg_ag     { background: #EDE0FE; color: #5A1A99; }
+.badge-onsite    { background: #FEE8D0; color: #7A3800; }
+
+/* ── Email input ── */
+.email-input {
+  width: 100%; height: 30px; border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0 8px; font-size: 13px;
+  color: var(--text); background: var(--surface); outline: none;
+  font-family: inherit; transition: border-color .15s;
+}
+.email-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(1,105,111,.12); }
+.email-input.invalid { border-color: var(--error) !important; }
+.email-input.saving { opacity: .6; }
+.email-input.saved-flash {
+  border-color: var(--success) !important;
+  background: #F0F8EC;
+  transition: none;
+}
+.email-cell { position: relative; }
+.email-error { font-size: 11px; color: var(--error); margin-top: 2px; display: none; }
+.email-error.show { display: block; }
+
+/* ── Skeleton ── */
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skel {
+  background: linear-gradient(90deg, #ECEAE4 25%, #F5F4F0 50%, #ECEAE4 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 4px;
+  height: 14px; display: inline-block;
+}
+
+/* ── Empty / error states ── */
+.state-box {
+  text-align: center; padding: 48px 24px; color: var(--text-muted);
+}
+.state-box h3 { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.state-box p { font-size: 13px; margin-bottom: 14px; }
+.error-banner {
+  background: #FDEDEF; border: 1px solid #F5C0C0; border-radius: var(--radius);
+  padding: 10px 14px; display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; display: none;
+}
+.error-banner.show { display: flex; }
+.error-banner p { font-size: 13px; color: #8B2020; }
+
+/* ── Pagination ── */
+.pager {
+  display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+  border-top: 1px solid var(--border); background: var(--surface-alt);
+  font-size: 13px; color: var(--text-muted);
+}
+.pager button {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 3px 12px; font-size: 13px; color: var(--text);
+}
+.pager button:hover:not(:disabled) { background: var(--surface-alt); }
+.pager button:disabled { opacity: .35; cursor: default; }
+.pager-info { flex: 1; text-align: center; }
+
+/* ── Toasts ── */
+#toast-container {
+  position: fixed; bottom: 20px; right: 20px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.toast {
+  padding: 10px 16px; border-radius: var(--radius-lg); font-size: 13px;
+  font-weight: 500; color: #fff; max-width: 320px; pointer-events: auto;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .22s, transform .22s;
+  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.success { background: var(--primary); }
+.toast.error { background: var(--error); }
+.toast.warning { background: var(--warning); }
+.toast-close { background: none; border: none; color: rgba(255,255,255,.7); font-size: 16px; padding: 0; cursor: pointer; line-height: 1; }
+.toast-close:hover { color: #fff; }
+
+/* ── Modal ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.45); z-index: 100;
+  align-items: flex-start; justify-content: center;
+  overflow-y: auto; padding: 40px 20px;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface); border-radius: var(--radius-lg);
+  padding: 20px 22px; width: 700px; max-width: 96vw;
+  box-shadow: 0 8px 40px rgba(0,0,0,.18); margin: auto;
+}
+.modal-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
+.modal-title { font-size: 16px; font-weight: 700; }
+.modal-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.modal-close { background: none; border: none; font-size: 20px; color: var(--text-muted); cursor: pointer; line-height: 1; }
+.modal-close:hover { color: var(--text); }
+.modal-section-title {
+  font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  padding: 8px 0 6px; border-bottom: 1px solid var(--border); margin-bottom: 8px;
+}
+.modal-section-title.ok { color: var(--success); }
+.modal-section-title.warn { color: var(--warning); }
+.modal-section-title.err { color: var(--error); }
+.match-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px; }
+.match-table th {
+  background: var(--surface-alt); padding: 6px 8px; text-align: left;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-muted); border-bottom: 1px solid var(--border);
+}
+.match-table td { padding: 6px 8px; border-bottom: 1px solid #EDEBE5; vertical-align: middle; }
+.match-table tr:last-child td { border-bottom: none; }
+.conf-bar { height: 4px; border-radius: 2px; background: var(--border); margin-top: 3px; }
+.conf-fill { height: 100%; border-radius: 2px; }
+.modal-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); gap: 10px; flex-wrap: wrap; }
+.unmatched-list { font-size: 12px; color: var(--text-muted); font-family: monospace; background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; max-height: 100px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="page-header">
+  <div class="page-header-left">
+    <a class="back-link" href="/eberry-admin-dashboard/">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M10 13L5 8l5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Dashboard
+    </a>
+    <div>
+      <div class="page-title">Missing Email — Bulk Edit</div>
+      <div class="page-subtitle" id="header-subtitle">Loading…</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="btn-save-all" id="btn-save-all" onclick="saveAllDirty()">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span id="save-all-label">Save 0 changes</span>
+    </button>
+  </div>
+</header>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<!-- CSV Modal -->
+<div class="modal-overlay" id="csv-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title">CSV Match Preview</div>
+        <div class="modal-subtitle" id="csv-modal-subtitle">Review matches before applying</div>
+      </div>
+      <button class="modal-close" onclick="closeCSVModal()">×</button>
+    </div>
+    <div id="csv-modal-body"></div>
+    <div class="modal-footer">
+      <span id="csv-modal-count" style="font-size:13px;color:var(--text-muted)"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn-secondary" onclick="closeCSVModal()">Cancel</button>
+        <button class="btn-primary" id="btn-apply-csv" onclick="applyCSVMatches()">Apply matches</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Error banner -->
+  <div class="error-banner" id="error-banner">
+    <p id="error-banner-text"></p>
+    <button class="btn-secondary" onclick="loadWorkers()">Retry</button>
+  </div>
+
+  <!-- Stat bar -->
+  <div class="stat-bar">
+    <div class="stat-card">
+      <div class="stat-label">Missing Email</div>
+      <div class="stat-value accent" id="stat-missing">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Workers</div>
+      <div class="stat-value" id="stat-active">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Workers</div>
+      <div class="stat-value" id="stat-total">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Saved This Session</div>
+      <div class="stat-value accent" id="stat-saved">0</div>
+    </div>
+  </div>
+
+  <!-- CSV paste panel -->
+  <div class="csv-panel">
+    <div class="csv-panel-header" onclick="toggleCSVPanel()">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="csv-panel-title">Paste CSV to bulk-match emails</span>
+        <span class="csv-panel-subtitle">— first_name,last_name,email &nbsp;or&nbsp; worker_id,email</span>
+      </div>
+      <span class="csv-chevron" id="csv-chevron">▼</span>
+    </div>
+    <div class="csv-body" id="csv-body">
+      <div class="csv-format-hint">
+        Format A:&nbsp; first_name,last_name,email<br>
+        Format B:&nbsp; worker_id,email&nbsp;&nbsp;&nbsp;(exact UUID match)<br>
+        Header row is optional — detected automatically.
+      </div>
+      <div class="csv-row">
+        <textarea class="csv-textarea" id="csv-input" placeholder="Paste CSV here…"></textarea>
+        <div class="csv-actions">
+          <button class="btn-primary" onclick="matchCSV()">Match</button>
+          <button class="btn-secondary" onclick="document.getElementById('csv-input').value=''">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <div class="filter-row">
+
+      <!-- Status pills -->
+      <div class="filter-group">
+        <div class="filter-label">Status</div>
+        <div class="filter-pills" id="status-pills">
+          <span class="pill active" data-status="active">Active</span>
+          <span class="pill" data-status="on_leave">On Leave</span>
+          <span class="pill" data-status="pending_arrival">Pending</span>
+          <span class="pill" data-status="abscond">Abscond</span>
+          <span class="pill" data-status="inactive">Inactive</span>
+          <span class="pill" data-status="terminated">Terminated</span>
+          <span class="pill" data-status="departed">Departed</span>
+        </div>
+      </div>
+
+      <!-- Vendor pills -->
+      <div class="filter-group">
+        <div class="filter-label">Vendor</div>
+        <div class="filter-pills" id="vendor-pills">
+          <span class="pill active" data-vendor="in_house">In-House</span>
+          <span class="pill active" data-vendor="cg_ag">CG/AG</span>
+          <span class="pill active" data-vendor="onsite">Onsite</span>
+        </div>
+      </div>
+
+      <!-- Farm search -->
+      <div class="filter-group">
+        <div class="filter-label">Farm</div>
+        <input type="text" class="filter-input" id="farm-search" placeholder="Search farm name…">
+      </div>
+
+      <!-- Home crew -->
+      <div class="filter-group">
+        <div class="filter-label">Home Crew</div>
+        <select class="filter-select" id="crew-select">
+          <option value="">All crews</option>
+        </select>
+      </div>
+
+      <!-- Missing-email toggle -->
+      <div class="filter-group">
+        <div class="filter-label">View</div>
+        <label class="filter-toggle">
+          <label class="toggle-switch">
+            <input type="checkbox" id="missing-only-toggle" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          Missing email only
+        </label>
+      </div>
+
+      <div style="margin-left:auto;display:flex;align-items:flex-end">
+        <button class="btn-ghost" onclick="clearFilters()">Clear filters</button>
+      </div>
+    </div>
+    <div class="filter-result-count" id="filter-result-count"></div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap" id="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th style="width:36px"><input type="checkbox" id="select-all" onchange="toggleSelectAll(this)"></th>
+          <th style="width:180px" onclick="setSort('last_name')">Worker <span class="sort-arrow" id="sort-last_name">↕</span></th>
+          <th style="width:90px" onclick="setSort('employee_code')">ID <span class="sort-arrow" id="sort-employee_code"></span></th>
+          <th style="width:80px" onclick="setSort('status')">Status <span class="sort-arrow" id="sort-status"></span></th>
+          <th style="width:70px" onclick="setSort('payroll_vendor')">Vendor <span class="sort-arrow" id="sort-payroll_vendor"></span></th>
+          <th style="width:130px" onclick="setSort('farm_name')">Farm <span class="sort-arrow" id="sort-farm_name"></span></th>
+          <th style="width:110px" onclick="setSort('home_crew_label')">Crew <span class="sort-arrow" id="sort-home_crew_label"></span></th>
+          <th>Email</th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+        <!-- rows injected by JS -->
+      </tbody>
+    </table>
+    <div class="pager" id="pager" style="display:none">
+      <button id="pager-prev" onclick="goPage(-1)">← Prev</button>
+      <span class="pager-info" id="pager-info"></span>
+      <button id="pager-next" onclick="goPage(1)">Next →</button>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script type="module">
+// ─────────────────────────────────────────────────
+// Supabase init via window.__APP_CONFIG__
+// ─────────────────────────────────────────────────
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const cfg = window.__APP_CONFIG__ || {};
+const SUPABASE_URL  = cfg.SUPABASE_URL  || '';
+const SUPABASE_KEY  = cfg.SUPABASE_ANON_KEY || '';
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  showBanner('SUPABASE_URL and SUPABASE_ANON_KEY must be set in window.__APP_CONFIG__. Cannot load page.');
+}
+
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ─────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────
+let allWorkers  = [];   // all rows from DB (matching current filter set, pre-pagination)
+let filteredWorkers = [];
+let currentPage = 1;
+const PAGE_SIZE = 100;
+
+let sortCol = 'last_name';
+let sortDir = 'asc';
+
+// Filter state
+let activeStatuses  = new Set(['active']);
+let activeVendors   = new Set(['in_house','cg_ag','onsite']);
+let farmQuery       = '';
+let selectedCrew    = '';
+let missingOnly     = true;
+
+// Dirty tracking: worker_id → { oldEmail, newEmail }
+const dirtyRows = new Map();
+let savedCount  = 0;
+
+// Save debounce timers
+const saveTimers = new Map();
+
+// Crews lookup
+let crewsMap = new Map(); // crew_id → label
+
+// CSV pending matches
+let pendingCSVMatches = [];
+
+// ─────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  restoreFilters();
+  renderPills();
+  await Promise.all([loadCrews(), loadWorkers()]);
+  attachFilterListeners();
+});
+
+// ─────────────────────────────────────────────────
+// Session storage for filter persistence
+// ─────────────────────────────────────────────────
+function saveFilters() {
+  try {
+    sessionStorage.setItem('meb_filters', JSON.stringify({
+      statuses: [...activeStatuses],
+      vendors:  [...activeVendors],
+      farmQuery, selectedCrew, missingOnly
+    }));
+  } catch(_) {}
+}
+
+function restoreFilters() {
+  try {
+    const raw = sessionStorage.getItem('meb_filters');
+    if (!raw) return;
+    const f = JSON.parse(raw);
+    activeStatuses = new Set(f.statuses || ['active']);
+    activeVendors  = new Set(f.vendors  || ['in_house','cg_ag','onsite']);
+    farmQuery      = f.farmQuery || '';
+    selectedCrew   = f.selectedCrew || '';
+    missingOnly    = f.missingOnly !== undefined ? f.missingOnly : true;
+    document.getElementById('farm-search').value = farmQuery;
+    document.getElementById('missing-only-toggle').checked = missingOnly;
+  } catch(_) {}
+}
+
+// ─────────────────────────────────────────────────
+// Load crews
+// ─────────────────────────────────────────────────
+async function loadCrews() {
+  const { data, error } = await sb
+    .schema('payroll')
+    .from('home_crews')
+    .select('home_crew_id, home_crew_label')
+    .eq('is_active', true)
+    .order('home_crew_label');
+
+  if (error || !data) return;
+
+  const sel = document.getElementById('crew-select');
+  data.forEach(c => {
+    crewsMap.set(c.home_crew_id, c.home_crew_label);
+    const opt = document.createElement('option');
+    opt.value = c.home_crew_id;
+    opt.textContent = c.home_crew_label;
+    if (c.home_crew_id === selectedCrew) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+// ─────────────────────────────────────────────────
+// Load workers
+// ─────────────────────────────────────────────────
+async function loadWorkers() {
+  showLoading();
+  hideBanner();
+
+  try {
+    let query = sb
+      .schema('hris')
+      .from('workers')
+      .select(`
+        worker_id,
+        employee_code,
+        first_name,
+        last_name,
+        personal_email,
+        status,
+        payroll_vendor,
+        current_farm_id,
+        home_crew_id,
+        farms:hris.farms!hris.workers_current_farm_id_fkey ( farm_name )
+      `)
+      .order('last_name', { ascending: true })
+      .order('first_name', { ascending: true });
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    allWorkers = (data || []).map(w => ({
+      ...w,
+      farm_name:       w.farms?.farm_name || '',
+      home_crew_label: crewsMap.get(w.home_crew_id) || '',
+    }));
+
+    // Stats
+    const total  = allWorkers.length;
+    const active = allWorkers.filter(w => w.status === 'active').length;
+    const missing= allWorkers.filter(w => !w.personal_email).length;
+    document.getElementById('stat-total').textContent  = total.toLocaleString();
+    document.getElementById('stat-active').textContent = active.toLocaleString();
+    document.getElementById('stat-missing').textContent= missing.toLocaleString();
+    document.getElementById('header-subtitle').textContent =
+      `Workers without email: ${missing.toLocaleString()} of ${active.toLocaleString()} active`;
+
+    applyFilters();
+
+  } catch(err) {
+    showBanner('Failed to load workers — ' + (err.message || err));
+    renderEmpty('Load error. Check the error banner above and retry.');
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Filter logic
+// ─────────────────────────────────────────────────
+function applyFilters() {
+  const farmLower = farmQuery.toLowerCase().trim();
+
+  filteredWorkers = allWorkers.filter(w => {
+    if (activeStatuses.size && !activeStatuses.has(w.status)) return false;
+    if (activeVendors.size  && !activeVendors.has(w.payroll_vendor)) return false;
+    if (farmLower && !w.farm_name.toLowerCase().includes(farmLower)) return false;
+    if (selectedCrew && w.home_crew_id !== selectedCrew) return false;
+    if (missingOnly && w.personal_email) return false;
+    return true;
+  });
+
+  // Apply sort
+  filteredWorkers.sort((a, b) => {
+    let av = a[sortCol] || '';
+    let bv = b[sortCol] || '';
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    if (av < bv) return sortDir === 'asc' ? -1 : 1;
+    if (av > bv) return sortDir === 'asc' ?  1 : -1;
+    return 0;
+  });
+
+  currentPage = 1;
+  updateResultCount();
+  renderPage();
+  saveFilters();
+}
+
+function updateResultCount() {
+  const missing = filteredWorkers.filter(w => !w.personal_email).length;
+  document.getElementById('filter-result-count').textContent =
+    `${filteredWorkers.length.toLocaleString()} worker${filteredWorkers.length !== 1 ? 's' : ''} · ${missing.toLocaleString()} without email`;
+}
+
+// ─────────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────────
+function renderPage() {
+  const tbody  = document.getElementById('table-body');
+  const pager  = document.getElementById('pager');
+  const total  = filteredWorkers.length;
+  const pages  = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  currentPage  = Math.min(currentPage, pages);
+  const start  = (currentPage - 1) * PAGE_SIZE;
+  const slice  = filteredWorkers.slice(start, start + PAGE_SIZE);
+
+  if (total === 0) {
+    tbody.innerHTML = '';
+    pager.style.display = 'none';
+    renderEmpty();
+    return;
+  }
+
+  // Remove empty state if present
+  const existingEmpty = document.getElementById('empty-state');
+  if (existingEmpty) existingEmpty.remove();
+
+  tbody.innerHTML = slice.map(w => workerRow(w)).join('');
+
+  // Wire up email inputs
+  slice.forEach(w => {
+    const inp = document.getElementById('email-' + w.worker_id);
+    if (!inp) return;
+
+    inp.addEventListener('input', () => onEmailInput(w, inp));
+    inp.addEventListener('keydown', e => onEmailKeydown(e, w, inp));
+    inp.addEventListener('blur', () => scheduleAutosave(w, inp));
+    inp.addEventListener('focus', () => { inp._origVal = inp.value; });
+  });
+
+  // Restore dirty/unsaved values for rows that are back in view
+  slice.forEach(w => {
+    if (dirtyRows.has(w.worker_id)) {
+      const inp = document.getElementById('email-' + w.worker_id);
+      if (inp) {
+        inp.value = dirtyRows.get(w.worker_id).newEmail;
+        inp.closest('tr').classList.add('dirty');
+      }
+    }
+  });
+
+  // Pagination
+  if (pages > 1) {
+    pager.style.display = 'flex';
+    document.getElementById('pager-info').textContent =
+      `Page ${currentPage} of ${pages} (${total.toLocaleString()} workers)`;
+    document.getElementById('pager-prev').disabled = currentPage === 1;
+    document.getElementById('pager-next').disabled = currentPage === pages;
+  } else {
+    pager.style.display = 'none';
+  }
+
+  updateSelectAllState();
+}
+
+function workerRow(w) {
+  const isDirty   = dirtyRows.has(w.worker_id);
+  const emailVal  = isDirty ? dirtyRows.get(w.worker_id).newEmail : (w.personal_email || '');
+  const displayId = w.employee_code || w.worker_id.slice(-8);
+
+  return `<tr class="${isDirty ? 'dirty' : ''}" data-worker-id="${escHtml(w.worker_id)}">
+    <td style="width:36px"><input type="checkbox" class="row-cb" value="${escHtml(w.worker_id)}"></td>
+    <td style="width:180px">${escHtml(w.first_name)} ${escHtml(w.last_name)}</td>
+    <td style="width:90px;font-family:monospace;font-size:11px;color:var(--text-muted)">${escHtml(displayId)}</td>
+    <td style="width:80px"><span class="badge badge-${escHtml(w.status)}">${escHtml(w.status.replace('_',' '))}</span></td>
+    <td style="width:70px"><span class="badge badge-${escHtml(w.payroll_vendor)}">${escHtml(w.payroll_vendor.replace('_',' '))}</span></td>
+    <td style="width:130px;overflow:hidden;text-overflow:ellipsis" title="${escHtml(w.farm_name)}">${escHtml(w.farm_name)}</td>
+    <td style="width:110px;overflow:hidden;text-overflow:ellipsis" title="${escHtml(w.home_crew_label)}">${escHtml(w.home_crew_label)}</td>
+    <td class="email-cell">
+      <input
+        type="email"
+        class="email-input"
+        id="email-${escHtml(w.worker_id)}"
+        value="${escHtml(emailVal)}"
+        placeholder="email@example.com"
+        autocomplete="off"
+        data-worker-id="${escHtml(w.worker_id)}"
+      >
+      <div class="email-error" id="email-err-${escHtml(w.worker_id)}">Invalid email format</div>
+    </td>
+  </tr>`;
+}
+
+function renderEmpty(msg) {
+  const existingEmpty = document.getElementById('empty-state');
+  if (existingEmpty) existingEmpty.remove();
+  const tbody = document.getElementById('table-body');
+  const allHaveEmail = filteredWorkers.length > 0 && filteredWorkers.every(w => w.personal_email);
+  const message = msg || (allHaveEmail
+    ? 'All workers in this view have email addresses. Great work!'
+    : 'No workers match the current filters.');
+  const hint = allHaveEmail
+    ? '<button class="btn-ghost" onclick="document.getElementById(\'missing-only-toggle\').checked=false;missingOnly=false;applyFilters()">Show all workers</button>'
+    : '<button class="btn-ghost" onclick="clearFilters()">Clear filters</button>';
+  const div = document.createElement('div');
+  div.id = 'empty-state';
+  div.className = 'state-box';
+  div.innerHTML = `<h3>${msg ? '⚠ Error' : allHaveEmail ? '✓ Done' : 'No results'}</h3><p>${message}</p>${hint}`;
+  tbody.parentNode.insertBefore(div, tbody.nextSibling.nextSibling || tbody.nextSibling);
+}
+
+function showLoading() {
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML = Array(5).fill(0).map(() => `
+    <tr>
+      <td><span class="skel" style="width:16px;height:16px;border-radius:3px"></span></td>
+      <td><span class="skel" style="width:${70+Math.random()*60|0}px"></span></td>
+      <td><span class="skel" style="width:60px"></span></td>
+      <td><span class="skel" style="width:50px;border-radius:20px"></span></td>
+      <td><span class="skel" style="width:45px;border-radius:20px"></span></td>
+      <td><span class="skel" style="width:${80+Math.random()*50|0}px"></span></td>
+      <td><span class="skel" style="width:70px"></span></td>
+      <td><span class="skel" style="width:100%;max-width:220px;height:28px;border-radius:6px"></span></td>
+    </tr>
+  `).join('');
+}
+
+// ─────────────────────────────────────────────────
+// Email input handlers
+// ─────────────────────────────────────────────────
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isValidEmail(v) {
+  return v === '' || EMAIL_RE.test(v);
+}
+
+function onEmailInput(w, inp) {
+  const valid = isValidEmail(inp.value.trim());
+  const errEl = document.getElementById('email-err-' + w.worker_id);
+  if (valid) {
+    inp.classList.remove('invalid');
+    if (errEl) { errEl.classList.remove('show'); }
+  } else {
+    inp.classList.add('invalid');
+    if (errEl) { errEl.classList.add('show'); }
+  }
+  // Mark row as dirty if changed from original DB value
+  const orig = w.personal_email || '';
+  const row  = inp.closest('tr');
+  if (inp.value.trim() !== orig) {
+    dirtyRows.set(w.worker_id, { oldEmail: orig, newEmail: inp.value.trim() });
+    row.classList.add('dirty');
+  } else {
+    dirtyRows.delete(w.worker_id);
+    row.classList.remove('dirty');
+  }
+  updateSaveAllButton();
+}
+
+function onEmailKeydown(e, w, inp) {
+  if (e.key === 'Escape') {
+    inp.value = w.personal_email || '';
+    dirtyRows.delete(w.worker_id);
+    inp.closest('tr').classList.remove('dirty');
+    inp.classList.remove('invalid');
+    const errEl = document.getElementById('email-err-' + w.worker_id);
+    if (errEl) errEl.classList.remove('show');
+    updateSaveAllButton();
+    inp.blur();
+    return;
+  }
+
+  // Tab / Enter — move to next row's email input
+  if (e.key === 'Tab' || e.key === 'Enter') {
+    e.preventDefault();
+    const allInputs = [...document.querySelectorAll('.email-input')];
+    const idx = allInputs.indexOf(inp);
+    const next = allInputs[e.shiftKey ? idx - 1 : idx + 1];
+    if (next) next.focus();
+    else if (idx === allInputs.length - 1 && currentPage < Math.ceil(filteredWorkers.length / PAGE_SIZE)) {
+      goPage(1); // advance page, focus first input after render
+      setTimeout(() => {
+        const first = document.querySelector('.email-input');
+        if (first) first.focus();
+      }, 50);
+    }
+  }
+}
+
+function scheduleAutosave(w, inp) {
+  if (saveTimers.has(w.worker_id)) {
+    clearTimeout(saveTimers.get(w.worker_id));
+  }
+  const t = setTimeout(() => {
+    autosave(w, inp);
+  }, 800);
+  saveTimers.set(w.worker_id, t);
+}
+
+async function autosave(w, inp) {
+  const newEmail = inp.value.trim();
+  const oldEmail = w.personal_email || '';
+  if (newEmail === oldEmail) return;
+  if (!isValidEmail(newEmail)) return; // don't save invalid
+
+  // Confirm clear
+  if (newEmail === '' && oldEmail !== '') {
+    const ok = confirm(`Clear email for ${w.first_name} ${w.last_name}? This removes their email from the record.`);
+    if (!ok) {
+      inp.value = oldEmail;
+      dirtyRows.delete(w.worker_id);
+      inp.closest('tr').classList.remove('dirty');
+      updateSaveAllButton();
+      return;
+    }
+  }
+
+  inp.classList.add('saving');
+  inp.disabled = true;
+
+  try {
+    const { error } = await sb
+      .schema('hris')
+      .from('workers')
+      .update({ personal_email: newEmail || null })
+      .eq('worker_id', w.worker_id);
+
+    if (error) throw error;
+
+    // Update local cache
+    const cached = allWorkers.find(x => x.worker_id === w.worker_id);
+    if (cached) cached.personal_email = newEmail || null;
+
+    // Audit log (best-effort)
+    auditLog(w.worker_id, oldEmail, newEmail);
+
+    // Update UI
+    inp.classList.remove('saving', 'invalid');
+    inp.classList.add('saved-flash');
+    setTimeout(() => inp.classList.remove('saved-flash'), 1200);
+    inp.closest('tr').classList.remove('dirty');
+    dirtyRows.delete(w.worker_id);
+
+    savedCount++;
+    document.getElementById('stat-saved').textContent = savedCount;
+    updateSaveAllButton();
+
+    // Update header count
+    const active  = allWorkers.filter(x => x.status === 'active').length;
+    const missing = allWorkers.filter(x => !x.personal_email).length;
+    document.getElementById('header-subtitle').textContent =
+      `Workers without email: ${missing.toLocaleString()} of ${active.toLocaleString()} active`;
+    document.getElementById('stat-missing').textContent = missing.toLocaleString();
+
+    showToast(`Email saved for ${w.first_name} ${w.last_name}`, 'success');
+
+  } catch(err) {
+    showToast('Save failed — ' + (err.message || err), 'error', 5000);
+  } finally {
+    inp.classList.remove('saving');
+    inp.disabled = false;
+  }
+}
+
+async function auditLog(workerId, oldEmail, newEmail) {
+  try {
+    const { data: { user } } = await sb.auth.getUser();
+    await sb
+      .schema('audit')
+      .from('log')
+      .insert({
+        schema_name:    'hris',
+        table_name:     'workers',
+        row_pk:         workerId,
+        action:         'UPDATE',
+        user_id:        user?.id ?? null,
+        changed_fields: ['personal_email'],
+        old_data:       { personal_email: oldEmail || null },
+        new_data:       { personal_email: newEmail || null },
+        diff:           { personal_email: { from: oldEmail || null, to: newEmail || null } },
+        reason:         'bulk_email_edit'
+      });
+  } catch(e) {
+    console.warn('audit.log write failed:', e.message || e);
+    showToast('Email saved, but audit log write failed. Check console.', 'warning', 4000);
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Save All Dirty
+// ─────────────────────────────────────────────────
+function updateSaveAllButton() {
+  const btn = document.getElementById('btn-save-all');
+  const lbl = document.getElementById('save-all-label');
+  if (dirtyRows.size > 0) {
+    btn.classList.add('visible');
+    lbl.textContent = `Save ${dirtyRows.size} unsaved change${dirtyRows.size !== 1 ? 's' : ''}`;
+  } else {
+    btn.classList.remove('visible');
+  }
+}
+
+window.saveAllDirty = async function() {
+  const ids = [...dirtyRows.keys()];
+  for (const wid of ids) {
+    const inp = document.getElementById('email-' + wid);
+    const w   = allWorkers.find(x => x.worker_id === wid);
+    if (inp && w) await autosave(w, inp);
+  }
+};
+
+// ─────────────────────────────────────────────────
+// Sort
+// ─────────────────────────────────────────────────
+window.setSort = function(col) {
+  if (sortCol === col) {
+    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortCol = col;
+    sortDir = 'asc';
+  }
+  // Update arrow indicators
+  document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+  const arrow = document.getElementById('sort-' + col);
+  if (arrow) arrow.textContent = sortDir === 'asc' ? ' ↑' : ' ↓';
+  document.querySelectorAll('th').forEach(th => th.classList.remove('sorted'));
+  const th = document.querySelector(`th[onclick="setSort('${col}')"]`);
+  if (th) th.classList.add('sorted');
+  applyFilters();
+};
+
+// ─────────────────────────────────────────────────
+// Pagination
+// ─────────────────────────────────────────────────
+window.goPage = function(dir) {
+  const pages = Math.ceil(filteredWorkers.length / PAGE_SIZE);
+  currentPage = Math.min(pages, Math.max(1, currentPage + dir));
+  renderPage();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+
+// ─────────────────────────────────────────────────
+// Select all
+// ─────────────────────────────────────────────────
+window.toggleSelectAll = function(cb) {
+  document.querySelectorAll('.row-cb').forEach(c => { c.checked = cb.checked; });
+};
+
+function updateSelectAllState() {
+  const all = document.querySelectorAll('.row-cb');
+  const checked = document.querySelectorAll('.row-cb:checked');
+  const sa = document.getElementById('select-all');
+  if (sa) {
+    sa.checked = all.length > 0 && checked.length === all.length;
+    sa.indeterminate = checked.length > 0 && checked.length < all.length;
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Filter listeners
+// ─────────────────────────────────────────────────
+function attachFilterListeners() {
+  // Status pills
+  document.getElementById('status-pills').addEventListener('click', e => {
+    const pill = e.target.closest('.pill[data-status]');
+    if (!pill) return;
+    const s = pill.dataset.status;
+    if (activeStatuses.has(s)) { activeStatuses.delete(s); pill.classList.remove('active'); }
+    else                        { activeStatuses.add(s);    pill.classList.add('active'); }
+    applyFilters();
+  });
+
+  // Vendor pills
+  document.getElementById('vendor-pills').addEventListener('click', e => {
+    const pill = e.target.closest('.pill[data-vendor]');
+    if (!pill) return;
+    const v = pill.dataset.vendor;
+    if (activeVendors.has(v)) { activeVendors.delete(v); pill.classList.remove('active'); }
+    else                       { activeVendors.add(v);    pill.classList.add('active'); }
+    applyFilters();
+  });
+
+  // Farm search (debounced 300ms)
+  let farmTimer;
+  document.getElementById('farm-search').addEventListener('input', e => {
+    clearTimeout(farmTimer);
+    farmTimer = setTimeout(() => {
+      farmQuery = e.target.value;
+      applyFilters();
+    }, 300);
+  });
+
+  // Crew select
+  document.getElementById('crew-select').addEventListener('change', e => {
+    selectedCrew = e.target.value;
+    applyFilters();
+  });
+
+  // Missing-only toggle
+  document.getElementById('missing-only-toggle').addEventListener('change', e => {
+    missingOnly = e.target.checked;
+    applyFilters();
+  });
+}
+
+function renderPills() {
+  // Sync pill active states from restored filter state
+  document.querySelectorAll('.pill[data-status]').forEach(p => {
+    p.classList.toggle('active', activeStatuses.has(p.dataset.status));
+  });
+  document.querySelectorAll('.pill[data-vendor]').forEach(p => {
+    p.classList.toggle('active', activeVendors.has(p.dataset.vendor));
+  });
+}
+
+window.clearFilters = function() {
+  activeStatuses = new Set(['active']);
+  activeVendors  = new Set(['in_house','cg_ag','onsite']);
+  farmQuery      = '';
+  selectedCrew   = '';
+  missingOnly    = true;
+  document.getElementById('farm-search').value = '';
+  document.getElementById('crew-select').value = '';
+  document.getElementById('missing-only-toggle').checked = true;
+  renderPills();
+  applyFilters();
+};
+
+// ─────────────────────────────────────────────────
+// CSV Panel
+// ─────────────────────────────────────────────────
+window.toggleCSVPanel = function() {
+  const body    = document.getElementById('csv-body');
+  const chevron = document.getElementById('csv-chevron');
+  const open    = body.classList.toggle('open');
+  chevron.classList.toggle('open', open);
+};
+
+window.matchCSV = function() {
+  const raw = document.getElementById('csv-input').value.trim();
+  if (!raw) { showToast('Paste some CSV data first.', 'warning'); return; }
+
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+
+  // Detect format: does first non-empty cell look like a UUID?
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const firstFields = lines[0].split(',').map(s => s.trim());
+  const isUUIDFormat = UUID_RE.test(firstFields[0]);
+
+  const matched   = [];
+  const lowConf   = [];
+  const unmatched = [];
+
+  if (isUUIDFormat) {
+    // Format B: worker_id,email
+    lines.forEach(line => {
+      const parts = line.split(',');
+      if (parts.length < 2) return;
+      const wid   = parts[0].trim();
+      const email = parts.slice(1).join(',').trim().replace(/^"|"$/g,'');
+      if (!UUID_RE.test(wid)) return;
+      const worker = allWorkers.find(w => w.worker_id === wid);
+      if (!worker) { unmatched.push({ csv: line, reason: 'UUID not found' }); return; }
+      if (!EMAIL_RE.test(email)) { unmatched.push({ csv: line, reason: 'invalid email' }); return; }
+      matched.push({ worker, email, confidence: 100, csvName: wid });
+    });
+
+  } else {
+    // Format A: first_name,last_name,email (possibly with header)
+    let dataLines = lines;
+    // Detect header: first line has no '@' and looks textual
+    if (!firstFields.some(f => f.includes('@'))) dataLines = lines.slice(1);
+
+    dataLines.forEach(line => {
+      const parts = line.split(',');
+      if (parts.length < 3) { unmatched.push({ csv: line, reason: 'too few columns' }); return; }
+      const firstName = parts[0].trim().replace(/^"|"$/g,'');
+      const lastName  = parts[1].trim().replace(/^"|"$/g,'');
+      const email     = parts[2].trim().replace(/^"|"$/g,'');
+      const csvName   = `${firstName} ${lastName}`;
+
+      if (!EMAIL_RE.test(email)) { unmatched.push({ csv: line, reason: 'invalid email' }); return; }
+
+      // Fuzzy match against filteredWorkers
+      let best = null, bestScore = 0;
+      filteredWorkers.forEach(w => {
+        const fullName = `${w.first_name} ${w.last_name}`;
+        const score = fuzzyScore(csvName, fullName);
+        if (score > bestScore) { bestScore = score; best = w; }
+      });
+
+      const conf = Math.round(bestScore * 100);
+      if (!best || conf < 40) {
+        unmatched.push({ csv: line, reason: `no match (best: ${conf}%)` });
+      } else if (conf < 80) {
+        lowConf.push({ worker: best, email, confidence: conf, csvName });
+      } else {
+        matched.push({ worker: best, email, confidence: conf, csvName });
+      }
+    });
+  }
+
+  pendingCSVMatches = [...matched, ...lowConf];
+  showCSVModal(matched, lowConf, unmatched);
+};
+
+function fuzzyScore(a, b) {
+  a = a.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  b = b.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if (a === b) return 1;
+  // Levenshtein distance
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m+1 }, (_, i) => Array.from({ length: n+1 }, (_, j) => i===0?j:j===0?i:0));
+  for (let i=1;i<=m;i++) for (let j=1;j<=n;j++) {
+    dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  }
+  const dist = dp[m][n];
+  return 1 - dist / Math.max(m, n);
+}
+
+function showCSVModal(matched, lowConf, unmatched) {
+  const body = document.getElementById('csv-modal-body');
+  let html = '';
+
+  if (matched.length) {
+    html += `<div class="modal-section-title ok">✓ Matched (${matched.length})</div>`;
+    html += '<table class="match-table"><thead><tr><th>CSV Name</th><th>Matched Worker</th><th>Email</th><th>Confidence</th><th>Include</th></tr></thead><tbody>';
+    matched.forEach((m, i) => {
+      const color = m.confidence >= 90 ? '#437A22' : '#964219';
+      html += `<tr>
+        <td>${escHtml(m.csvName)}</td>
+        <td>${escHtml(m.worker.first_name)} ${escHtml(m.worker.last_name)}</td>
+        <td style="font-family:monospace;font-size:11px">${escHtml(m.email)}</td>
+        <td>
+          ${m.confidence}%
+          <div class="conf-bar"><div class="conf-fill" style="width:${m.confidence}%;background:${color}"></div></div>
+        </td>
+        <td><input type="checkbox" data-match-idx="${i}" checked></td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+
+  if (lowConf.length) {
+    const offset = matched.length;
+    html += `<div class="modal-section-title warn">⚠ Low confidence (${lowConf.length}) — review carefully</div>`;
+    html += '<table class="match-table"><thead><tr><th>CSV Name</th><th>Matched Worker</th><th>Email</th><th>Confidence</th><th>Include</th></tr></thead><tbody>';
+    lowConf.forEach((m, i) => {
+      html += `<tr>
+        <td>${escHtml(m.csvName)}</td>
+        <td>${escHtml(m.worker.first_name)} ${escHtml(m.worker.last_name)}</td>
+        <td style="font-family:monospace;font-size:11px">${escHtml(m.email)}</td>
+        <td>
+          ${m.confidence}%
+          <div class="conf-bar"><div class="conf-fill" style="width:${m.confidence}%;background:#964219"></div></div>
+        </td>
+        <td><input type="checkbox" data-match-idx="${offset + i}"></td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+
+  if (unmatched.length) {
+    html += `<div class="modal-section-title err">✗ Unmatched (${unmatched.length})</div>`;
+    html += '<div class="unmatched-list">';
+    unmatched.forEach(u => {
+      html += `<div>${escHtml(u.csv)} <span style="color:var(--error);margin-left:6px">${escHtml(u.reason)}</span></div>`;
+    });
+    html += '</div>';
+  }
+
+  if (!matched.length && !lowConf.length) {
+    html += '<div class="state-box"><h3>No matches found</h3><p>Check your CSV format and ensure the names match workers in the current filtered view.</p></div>';
+    document.getElementById('btn-apply-csv').disabled = true;
+  } else {
+    document.getElementById('btn-apply-csv').disabled = false;
+  }
+
+  body.innerHTML = html;
+  document.getElementById('csv-modal-count').textContent =
+    `${matched.length} auto-matched · ${lowConf.length} low-confidence · ${unmatched.length} unmatched`;
+  document.getElementById('csv-modal').classList.add('open');
+}
+
+window.closeCSVModal = function() {
+  document.getElementById('csv-modal').classList.remove('open');
+  pendingCSVMatches = [];
+};
+
+window.applyCSVMatches = function() {
+  const checked = document.querySelectorAll('[data-match-idx]:checked');
+  let applied = 0;
+  checked.forEach(cb => {
+    const idx = parseInt(cb.dataset.matchIdx);
+    const match = pendingCSVMatches[idx];
+    if (!match) return;
+    const inp = document.getElementById('email-' + match.worker.worker_id);
+    if (inp) {
+      inp.value = match.email;
+      // Trigger dirty state
+      const w = allWorkers.find(x => x.worker_id === match.worker.worker_id);
+      if (w) {
+        dirtyRows.set(w.worker_id, { oldEmail: w.personal_email || '', newEmail: match.email });
+        inp.closest('tr').classList.add('dirty');
+      }
+      applied++;
+    }
+  });
+  updateSaveAllButton();
+  closeCSVModal();
+  showToast(`${applied} email${applied !== 1 ? 's' : ''} applied — review and save.`, 'success');
+};
+
+// ─────────────────────────────────────────────────
+// Banner
+// ─────────────────────────────────────────────────
+function showBanner(msg) {
+  const b = document.getElementById('error-banner');
+  document.getElementById('error-banner-text').textContent = msg;
+  b.classList.add('show');
+}
+function hideBanner() {
+  document.getElementById('error-banner').classList.remove('show');
+}
+
+// ─────────────────────────────────────────────────
+// Toasts
+// ─────────────────────────────────────────────────
+function showToast(msg, type='success', duration=3000) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span>${escHtml(msg)}</span><button class="toast-close" onclick="this.parentElement.remove()">×</button>`;
+  container.appendChild(toast);
+  requestAnimationFrame(() => { requestAnimationFrame(() => toast.classList.add('show')); });
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+  // Max 3 toasts
+  const toasts = container.querySelectorAll('.toast');
+  if (toasts.length > 3) toasts[0].remove();
+}
+
+// ─────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────
+function escHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#039;');
+}
+
+// Expose globals needed by inline handlers
+window.loadWorkers  = loadWorkers;
+window.clearFilters = clearFilters;
+window.applyFilters = applyFilters;
+window.missingOnly  = missingOnly;
+
+// Keep missingOnly in sync (it's referenced by the clear-filters button in empty state)
+Object.defineProperty(window, 'missingOnly', {
+  get: () => missingOnly,
+  set: v => { missingOnly = v; }
+});
+
+</script>
+</body>
+</html>

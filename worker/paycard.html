@@ -1,0 +1,1503 @@
+<!DOCTYPE html>
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  eBerry Admin Dashboard — Worker Direct Deposit (Paycard Funding)
+  ════════════════════════════════════════════════════════════════════════════
+
+  PURPOSE:
+    Standalone worker-profile page showing only the Direct Deposit tab with
+    the Paycard Funding sub-section. Intended as a reference/preview that
+    will later be embedded into the full worker profile.
+
+  SECTIONS:
+    Header   — Page header strip with "← Back to dashboard" link
+    Worker   — Worker picker (if no ?worker_id) or worker header card
+    Section 1 — Worker header card (name, employee code, farm, crew, status)
+    Section 2 — Direct Deposit form region
+                  · Bank placeholder note (bank fields managed separately)
+                  · Paycard Funding collapsible card (§3 + §5 of spec)
+
+  TABLE COLUMNS WRITTEN (hris.workers):
+    is_paycard          boolean
+    paycard_provider    text
+    paycard_last4       text (4 digits)
+    paycard_issued_at   date
+    paycard_status      text
+
+  TABLE COLUMNS READ (hris.workers):
+    worker_id, first_name, last_name, preferred_name, employee_code,
+    status, current_farm_id, home_crew_id, is_paycard, paycard_provider,
+    paycard_last4, paycard_issued_at, paycard_status
+
+  AUDIT LOGGING:
+    Writes to audit.log via supabase.schema('audit').from('log').insert(...)
+    ⚠ REQUIRES: PostgREST exposure of the `audit` schema.
+       Supabase Dashboard → Settings → API → Exposed schemas → add "audit"
+    If the audit insert fails the main save is NOT blocked (graceful degrade).
+
+  LOCKED DECISIONS (spec §12, 2026-05-20):
+    #1  is_paycard does NOT flip payment_method — metadata only.
+    #2  Both payroll + HR ops roles can edit all paycard fields.
+    #3  Audit table = audit.log (existing). No new table. PostgREST required.
+    #4  Bulk-add scope = by home_crew_id (separate page, not here).
+    #5  Status dropdown = soft state machine. UI warns on unusual transitions
+        but does NOT block them. HR retains override authority.
+
+  SUPABASE CONFIG:
+    Expects window.__APP_CONFIG__ = { SUPABASE_URL, SUPABASE_ANON_KEY }
+    Defaults SUPABASE_URL to 'https://opdwtijyropzoyeseoij.supabase.co'
+
+  URL PARAMETERS:
+    ?worker_id=<uuid>   — Load specific worker directly.
+    ?readonly=1         — Read-only mode: inputs replaced with static spans.
+
+  DEPENDENCIES:
+    @supabase/supabase-js@2 via esm.sh (no build step)
+  ════════════════════════════════════════════════════════════════════════════
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBerry — Worker Direct Deposit</title>
+<link rel="icon" href="/eberry-admin-dashboard/favicon.svg">
+<meta name="theme-color" content="#01696F">
+<style>
+/* ── Reset & Base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  background: #F7F6F2;
+  color: #28251D;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ── Design tokens (Nexus palette — matches leave_admin.html + missing_email_bulk_edit.html) ── */
+:root {
+  --bg:          #F7F6F2;
+  --surface:     #FFFFFF;
+  --surface-alt: #F9F8F5;
+  --border:      #D4D1CA;
+  --text:        #28251D;
+  --text-muted:  #7A7974;
+  --text-faint:  #BAB9B4;
+  --primary:     #01696F;
+  --primary-hv:  #0C4E54;
+  --error:       #A12C7B;
+  --warning:     #964219;
+  --success:     #437A22;
+  --radius:      7px;
+  --radius-lg:   11px;
+  --shadow:      0 1px 4px rgba(0,0,0,.08);
+}
+
+/* ── Page header ── */
+.page-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.page-header-left { display: flex; align-items: center; gap: 12px; }
+.page-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.page-subtitle { font-size: 12px; color: var(--text-muted); }
+.back-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.back-link:hover { color: var(--primary-hv); }
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+/* ── Layout ── */
+.container { max-width: 860px; margin: 0 auto; padding: 20px 20px 60px; }
+
+/* ── Buttons ── */
+button { cursor: pointer; font-family: inherit; font-size: 13px; border-radius: var(--radius); transition: all .15s; }
+.btn-primary {
+  background: var(--primary); color: #fff; border: none;
+  padding: 0 16px; height: 34px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary:hover { background: var(--primary-hv); }
+.btn-primary:disabled { opacity: .45; cursor: default; }
+.btn-secondary {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); padding: 0 13px; height: 34px;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.btn-secondary:hover { background: var(--surface-alt); }
+.btn-secondary:disabled { opacity: .45; cursor: default; }
+.btn-ghost {
+  background: none; border: none; color: var(--primary); padding: 0 8px; height: 28px; font-size: 12px;
+}
+.btn-ghost:hover { color: var(--primary-hv); text-decoration: underline; }
+
+/* ── Toasts ── */
+#toast-container {
+  position: fixed; bottom: 20px; right: 20px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.toast {
+  padding: 10px 16px; border-radius: var(--radius-lg); font-size: 13px;
+  font-weight: 500; color: #fff; max-width: 380px; pointer-events: auto;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .22s, transform .22s;
+  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.success { background: var(--primary); }
+.toast.error   { background: var(--error); }
+.toast.warning { background: var(--warning); }
+.toast-close { background: none; border: none; color: rgba(255,255,255,.7); font-size: 16px; padding: 0; cursor: pointer; line-height: 1; }
+.toast-close:hover { color: #fff; }
+
+/* ── Error / info banners ── */
+.error-banner {
+  background: #FDEDEF; border: 1px solid #F5C0C0; border-radius: var(--radius);
+  padding: 10px 14px; display: none;
+  align-items: center; justify-content: space-between;
+  margin-bottom: 14px; gap: 10px;
+}
+.error-banner.show { display: flex; }
+.error-banner p { font-size: 13px; color: #8B2020; flex: 1; }
+
+.info-banner {
+  background: #FFF8EC; border: 1px solid #F5D88A; border-radius: var(--radius);
+  padding: 10px 14px; display: none;
+  align-items: center; justify-content: space-between;
+  margin-bottom: 14px; gap: 10px;
+}
+.info-banner.show { display: flex; }
+.info-banner p { font-size: 13px; color: #7A5000; flex: 1; }
+
+/* ── Global spinner ── */
+#global-spinner {
+  display: none; position: fixed; inset: 0; z-index: 200;
+  background: rgba(247,246,242,.7);
+  align-items: center; justify-content: center;
+  flex-direction: column; gap: 10px;
+}
+#global-spinner.show { display: flex; }
+.spinner-ring {
+  width: 36px; height: 36px; border: 3px solid var(--border);
+  border-top-color: var(--primary); border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#global-spinner p { font-size: 13px; color: var(--text-muted); }
+
+/* ── Skeleton ── */
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skel {
+  background: linear-gradient(90deg, #ECEAE4 25%, #F5F4F0 50%, #ECEAE4 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 4px;
+  height: 14px; display: inline-block;
+}
+
+/* ── Status chips ── */
+.chip {
+  display: inline-flex; align-items: center; font-size: 11px; font-weight: 700;
+  padding: 2px 9px; border-radius: 20px; white-space: nowrap;
+}
+.chip-active      { background: #D1ECE9; color: #01696F; }
+.chip-requested   { background: #FFF0C0; color: #7A5000; }
+.chip-ordered     { background: #E0F0FF; color: #1A4D80; }
+.chip-in_transit  { background: #EFE8FF; color: #5A2DA0; }
+.chip-lost        { background: #FDEDEF; color: #8B2020; }
+.chip-replaced    { background: #EEECEA; color: #5A5855; }
+.chip-cancelled   { background: #EEECEA; color: #5A5855; }
+.chip-worker-active   { background: #D1ECE9; color: #01696F; }
+.chip-worker-inactive { background: #FFF0C0; color: #7A5000; }
+.chip-worker-archived { background: #EEECEA; color: #5A5855; }
+
+/* ── Form fields ── */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+}
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group.full-width { grid-column: 1 / -1; }
+.form-label {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.form-label .required { color: var(--error); margin-left: 2px; }
+.form-input, .form-select {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0 10px; height: 34px; font-size: 13px;
+  color: var(--text); background: var(--surface);
+  outline: none; font-family: inherit; transition: border-color .15s;
+  width: 100%;
+}
+.form-input:focus, .form-select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(1,105,111,.1);
+}
+.form-input.invalid, .form-select.invalid { border-color: var(--error); }
+.form-error { font-size: 11px; color: var(--error); margin-top: 2px; display: none; }
+.form-error.show { display: block; }
+
+/* ── Read-only field value spans ── */
+.field-value {
+  font-size: 13px; color: var(--text);
+  padding: 7px 0;
+  display: block;
+  border-bottom: 1px solid transparent;
+}
+.field-value.muted { color: var(--text-muted); font-style: italic; }
+
+/* ── Typeahead ── */
+.typeahead-wrap { position: relative; }
+.typeahead-dropdown {
+  position: absolute; top: calc(100% + 2px); left: 0; right: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  z-index: 100; max-height: 220px; overflow-y: auto;
+  display: none;
+}
+.typeahead-dropdown.open { display: block; }
+.typeahead-item {
+  padding: 8px 12px; cursor: pointer; font-size: 13px;
+  border-bottom: 1px solid #EDEBE5;
+}
+.typeahead-item:last-child { border-bottom: none; }
+.typeahead-item:hover, .typeahead-item.active { background: #F0F9F8; }
+.typeahead-item strong { color: var(--text); font-weight: 600; }
+.typeahead-item small { color: var(--text-muted); font-size: 11px; }
+.typeahead-empty { padding: 10px 12px; font-size: 13px; color: var(--text-muted); }
+
+/* ── Worker picker card (shown when no worker_id in URL) ── */
+.picker-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 28px 24px;
+  margin: 32px auto; max-width: 480px;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.picker-card h2 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+.picker-card p  { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+.picker-search-wrap { text-align: left; }
+
+/* ── Worker header card ── */
+.worker-header-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 16px 20px;
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+.worker-header-main { flex: 1; min-width: 0; }
+.worker-name {
+  font-size: 18px; font-weight: 700; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.worker-name .preferred { font-size: 14px; font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+.worker-meta {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 6px;
+}
+.worker-meta-item { font-size: 12px; color: var(--text-muted); }
+.worker-meta-item strong { color: var(--text); font-weight: 600; }
+.worker-header-badge { flex-shrink: 0; }
+
+/* ── Section cards ── */
+.section-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); margin-bottom: 20px;
+  overflow: hidden; box-shadow: var(--shadow);
+}
+.section-card-header {
+  padding: 13px 18px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.section-card-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.section-card-body { padding: 18px; }
+
+/* ── Bank placeholder note ── */
+.bank-placeholder {
+  background: var(--surface-alt); border: 1px dashed var(--border);
+  border-radius: var(--radius); padding: 12px 16px;
+  font-size: 12px; color: var(--text-muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.bank-placeholder svg { flex-shrink: 0; color: var(--text-faint); }
+
+/* ── Paycard collapsible card ── */
+.paycard-card {
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  overflow: hidden; margin-top: 14px;
+}
+.paycard-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 16px; cursor: pointer; user-select: none;
+  background: var(--surface-alt);
+}
+.paycard-card-header:hover { background: #F0F0EC; }
+.paycard-card-title {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; font-weight: 700; color: var(--text);
+}
+.paycard-chevron {
+  font-size: 11px; color: var(--text-muted);
+  transition: transform .2s; flex-shrink: 0;
+}
+.paycard-chevron.open { transform: rotate(180deg); }
+.paycard-body {
+  display: none; border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.paycard-body.open { display: block; }
+.paycard-body-inner { padding: 16px 16px 18px; }
+
+/* ── Checkbox row ── */
+.checkbox-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 16px;
+}
+.paycard-checkbox {
+  width: 16px; height: 16px; cursor: pointer;
+  accent-color: var(--primary); flex-shrink: 0;
+}
+.checkbox-label {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  cursor: pointer; user-select: none;
+}
+.checkbox-label.readonly { cursor: default; }
+
+/* ── Paycard sub-fields container ── */
+.paycard-fields { margin-top: 14px; }
+.paycard-fields.hidden { display: none; }
+
+/* ── Save status indicator ── */
+.save-indicator {
+  font-size: 11px; color: var(--text-muted);
+  display: flex; align-items: center; gap: 5px;
+  height: 18px;
+}
+.save-indicator .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-faint); flex-shrink: 0;
+}
+.save-indicator.saving .dot { background: var(--warning); animation: pulse-dot .8s infinite; }
+.save-indicator.saved  .dot { background: var(--success); }
+.save-indicator.error  .dot { background: var(--error); }
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+
+/* ── Readonly display rows ── */
+.readonly-grid {
+  display: grid; gap: 10px 20px;
+  grid-template-columns: 160px 1fr;
+  align-items: baseline;
+}
+.readonly-key {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.readonly-val { font-size: 13px; color: var(--text); }
+.readonly-val.none { color: var(--text-faint); font-style: italic; }
+
+/* ── State box (empty / error) ── */
+.state-box {
+  text-align: center; padding: 40px 24px; color: var(--text-muted);
+}
+.state-box h3 { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.state-box p { font-size: 13px; }
+
+/* ── Transition hint banner (soft state machine) ── */
+.transition-hint {
+  background: #FFFBE6; border: 1px solid #F0D060; border-radius: var(--radius);
+  padding: 8px 12px; font-size: 12px; color: #7A5000;
+  display: none; margin-top: 8px; align-items: center; gap: 8px;
+}
+.transition-hint.show { display: flex; }
+.transition-hint button {
+  background: none; border: none; color: #7A5000; font-size: 11px; padding: 0;
+  text-decoration: underline; cursor: pointer; flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<!-- ── Global spinner ── -->
+<div id="global-spinner">
+  <div class="spinner-ring"></div>
+  <p>Loading…</p>
+</div>
+
+<!-- ── Toast container ── -->
+<div id="toast-container"></div>
+
+<!-- ══════════════════════════════════════════════════════
+     PAGE HEADER
+══════════════════════════════════════════════════════ -->
+<header class="page-header">
+  <div class="page-header-left">
+    <a class="back-link" href="../index.html">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path d="M10 13L5 8l5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Back to dashboard
+    </a>
+    <div>
+      <div class="page-title">Worker — Direct Deposit</div>
+      <div class="page-subtitle" id="header-subtitle">Paycard Funding · worker profile</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span class="save-indicator" id="global-save-indicator">
+      <span class="dot"></span>
+      <span id="global-save-text"></span>
+    </span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- ── Error banner ── -->
+  <div class="error-banner" id="error-banner">
+    <p id="error-banner-text"></p>
+    <button class="btn-secondary" style="height:28px;padding:0 10px;font-size:12px" onclick="hideBanner()">Dismiss</button>
+  </div>
+
+  <!-- ── Info banner ── -->
+  <div class="info-banner" id="info-banner">
+    <p id="info-banner-text"></p>
+    <button class="btn-secondary" style="height:28px;padding:0 10px;font-size:12px" onclick="hideInfoBanner()">Dismiss</button>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       WORKER PICKER (shown when no ?worker_id in URL)
+  ══════════════════════════════════════════════════════ -->
+  <div id="worker-picker-section" style="display:none">
+    <div class="picker-card">
+      <h2>Select a Worker</h2>
+      <p>Search by name or employee code to open their Direct Deposit tab.</p>
+      <div class="picker-search-wrap">
+        <div class="typeahead-wrap">
+          <input
+            type="text"
+            class="form-input"
+            id="picker-search"
+            placeholder="Search worker…"
+            autocomplete="off"
+            style="width:100%"
+          >
+          <div class="typeahead-dropdown" id="picker-dropdown"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       SECTION 1: Worker header card
+  ══════════════════════════════════════════════════════ -->
+  <div id="worker-section" style="display:none">
+
+    <div class="worker-header-card" id="worker-header-card">
+      <!-- Populated by JS -->
+      <div class="worker-header-main">
+        <div class="worker-name">
+          <span class="skel" style="width:200px"></span>
+        </div>
+        <div class="worker-meta" style="margin-top:8px">
+          <span class="skel" style="width:100px"></span>
+          <span class="skel" style="width:120px"></span>
+          <span class="skel" style="width:90px"></span>
+        </div>
+      </div>
+      <div class="worker-header-badge">
+        <span class="skel" style="width:60px;border-radius:20px"></span>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         SECTION 2: Direct Deposit form region
+    ══════════════════════════════════════════════════════ -->
+    <div class="section-card" id="dd-section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Direct Deposit</span>
+        <span id="readonly-badge" style="display:none">
+          <span class="chip chip-cancelled" style="font-size:10px">Read-only</span>
+        </span>
+      </div>
+      <div class="section-card-body">
+
+        <!-- Bank fields placeholder -->
+        <div class="bank-placeholder">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M8 7v5M8 5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          Bank routing / account info is managed separately and does not appear on this page.
+        </div>
+
+        <!-- ══════════════════════════════════════════════════
+             PAYCARD FUNDING COLLAPSIBLE CARD
+        ══════════════════════════════════════════════════ -->
+        <div class="paycard-card" id="paycard-card">
+
+          <!-- Card header with chevron toggle -->
+          <div class="paycard-card-header" id="paycard-card-header" onclick="togglePaycardCard()">
+            <div class="paycard-card-title">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M2 7h12" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="5" cy="11" r="1" fill="currentColor"/>
+              </svg>
+              Paycard Funding
+            </div>
+            <svg class="paycard-chevron" id="paycard-chevron" width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+
+          <!-- Checkbox row — always visible (before body open) -->
+          <div class="checkbox-row" id="paycard-checkbox-row">
+            <!-- Populated by renderPaycardSection() -->
+          </div>
+
+          <!-- Expanded body (sub-fields) -->
+          <div class="paycard-body" id="paycard-body">
+            <div class="paycard-body-inner" id="paycard-body-inner">
+              <!-- Populated by renderPaycardSection() -->
+            </div>
+          </div>
+
+        </div><!-- /paycard-card -->
+
+      </div><!-- /section-card-body -->
+    </div><!-- /section-card -->
+
+  </div><!-- /worker-section -->
+
+</div><!-- /container -->
+
+<script type="module">
+// ═════════════════════════════════════════════════════════════════════════════
+// Supabase init
+// ═════════════════════════════════════════════════════════════════════════════
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const cfg         = window.__APP_CONFIG__ || {};
+const SUPABASE_URL = cfg.SUPABASE_URL || 'https://opdwtijyropzoyeseoij.supabase.co';
+const SUPABASE_KEY = cfg.SUPABASE_ANON_KEY || '';
+
+if (!SUPABASE_KEY) {
+  showBanner('SUPABASE_ANON_KEY not set in window.__APP_CONFIG__. Data will not load.');
+}
+
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// URL params
+// ═════════════════════════════════════════════════════════════════════════════
+const params   = new URLSearchParams(window.location.search);
+const WORKER_ID = params.get('worker_id') || null;
+const READONLY  = params.get('readonly') === '1';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Application state
+// ═════════════════════════════════════════════════════════════════════════════
+let workerData   = null;   // raw row from hris.workers
+let originalSnap = {};     // snapshot of paycard fields at load (for diff)
+
+// Paycard editing state
+let pendingPayload = {};   // fields changed but not yet saved
+let saveDebounceTimer = null;
+
+// Typeahead state (picker)
+let pickerTimer   = null;
+let pickerResults = [];
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Boot
+// ═════════════════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', async () => {
+  if (!WORKER_ID) {
+    // Show picker UI
+    document.getElementById('worker-picker-section').style.display = 'block';
+    initPickerTypeahead();
+    return;
+  }
+  await loadWorker(WORKER_ID);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WORKER PICKER — typeahead (shown when no ?worker_id)
+// ═════════════════════════════════════════════════════════════════════════════
+function initPickerTypeahead() {
+  const inp = document.getElementById('picker-search');
+  const dd  = document.getElementById('picker-dropdown');
+
+  inp.addEventListener('input', () => {
+    clearTimeout(pickerTimer);
+    const q = inp.value.trim();
+    if (q.length < 2) { dd.classList.remove('open'); return; }
+    pickerTimer = setTimeout(() => fetchPickerWorkers(q), 280);
+  });
+
+  inp.addEventListener('blur', () => {
+    setTimeout(() => dd.classList.remove('open'), 200);
+  });
+
+  inp.addEventListener('focus', () => {
+    if (pickerResults.length && inp.value.trim().length >= 2) {
+      dd.classList.add('open');
+    }
+  });
+}
+
+async function fetchPickerWorkers(q) {
+  const dd = document.getElementById('picker-dropdown');
+  dd.innerHTML = '<div class="typeahead-empty">Searching…</div>';
+  dd.classList.add('open');
+
+  try {
+    const { data, error } = await sb
+      .schema('hris')
+      .from('workers')
+      .select('worker_id, first_name, last_name, employee_code, status, farm:farms(farm_name)')
+      .neq('status', 'archived')
+      .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,employee_code.ilike.%${q}%`)
+      .order('last_name')
+      .limit(15);
+
+    if (error) throw error;
+
+    pickerResults = data || [];
+
+    if (!pickerResults.length) {
+      dd.innerHTML = '<div class="typeahead-empty">No workers found.</div>';
+      return;
+    }
+
+    dd.innerHTML = pickerResults.map((w, i) => {
+      const name = escHtml(`${w.first_name} ${w.last_name}`);
+      const code = escHtml(w.employee_code || '');
+      const farm = escHtml(w.farm?.farm_name || '');
+      return `<div class="typeahead-item" data-idx="${i}" onmousedown="selectPickerWorker(${i})">
+        <strong>${name}</strong>
+        <span style="color:var(--text-muted)"> (${code})</span>
+        ${farm ? `<br><small>— ${farm}</small>` : ''}
+      </div>`;
+    }).join('');
+  } catch(err) {
+    dd.innerHTML = `<div class="typeahead-empty">Error: ${escHtml(err.message || String(err))}</div>`;
+  }
+}
+
+window.selectPickerWorker = function(idx) {
+  const w = pickerResults[idx];
+  if (!w) return;
+  // Update URL and navigate
+  const url = new URL(window.location.href);
+  url.searchParams.set('worker_id', w.worker_id);
+  window.location.href = url.toString();
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SECTION 1: Load & render worker header card
+// ═════════════════════════════════════════════════════════════════════════════
+async function loadWorker(wid) {
+  showSpinner(true);
+  try {
+    // Fetch worker row
+    const { data: worker, error: wErr } = await sb
+      .schema('hris')
+      .from('workers')
+      .select(`
+        worker_id,
+        first_name,
+        last_name,
+        preferred_name,
+        employee_code,
+        status,
+        current_farm_id,
+        home_crew_id,
+        is_paycard,
+        paycard_provider,
+        paycard_last4,
+        paycard_issued_at,
+        paycard_status
+      `)
+      .eq('worker_id', wid)
+      .single();
+
+    if (wErr) throw wErr;
+    if (!worker) throw new Error('Worker not found.');
+
+    workerData = worker;
+
+    // Parallel fetch for farm name and home crew label
+    const [farmResult, crewResult] = await Promise.all([
+      worker.current_farm_id
+        ? sb.schema('hris').from('farms').select('farm_name').eq('farm_id', worker.current_farm_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      worker.home_crew_id
+        ? sb.schema('hris').from('crews').select('crew_label').eq('crew_id', worker.home_crew_id).maybeSingle()
+        : Promise.resolve({ data: null })
+    ]);
+
+    const farmName  = farmResult.data?.farm_name  || null;
+    const crewLabel = crewResult.data?.crew_label || null;
+
+    // Snapshot paycard fields for diff on save
+    originalSnap = snapshotPaycard(worker);
+
+    // Show worker section
+    document.getElementById('worker-picker-section').style.display = 'none';
+    document.getElementById('worker-section').style.display = 'block';
+
+    // Update subtitle
+    document.getElementById('header-subtitle').textContent =
+      `${worker.first_name} ${worker.last_name} · Direct Deposit`;
+
+    // Render header card
+    renderWorkerHeader(worker, farmName, crewLabel);
+
+    // Render paycard section
+    if (READONLY) {
+      document.getElementById('readonly-badge').style.display = 'inline';
+    }
+    renderPaycardSection(worker);
+
+  } catch(err) {
+    showBanner('Failed to load worker — ' + (err.message || String(err)));
+    document.getElementById('worker-picker-section').style.display = 'block';
+    initPickerTypeahead();
+  } finally {
+    showSpinner(false);
+  }
+}
+
+function renderWorkerHeader(worker, farmName, crewLabel) {
+  const card = document.getElementById('worker-header-card');
+
+  const preferred = worker.preferred_name
+    ? `<span class="preferred">(${escHtml(worker.preferred_name)})</span>`
+    : '';
+
+  const statusChipClass = {
+    active:   'chip-worker-active',
+    inactive: 'chip-worker-inactive',
+    archived: 'chip-worker-archived'
+  }[worker.status] || 'chip-cancelled';
+
+  card.innerHTML = `
+    <div class="worker-header-main">
+      <div class="worker-name">
+        ${escHtml(worker.first_name)} ${escHtml(worker.last_name)} ${preferred}
+      </div>
+      <div class="worker-meta">
+        <span class="worker-meta-item">
+          <strong>ID:</strong> ${escHtml(worker.employee_code || worker.worker_id.slice(-8))}
+        </span>
+        ${farmName ? `<span class="worker-meta-item"><strong>Farm:</strong> ${escHtml(farmName)}</span>` : ''}
+        ${crewLabel ? `<span class="worker-meta-item"><strong>Crew:</strong> ${escHtml(crewLabel)}</span>` : ''}
+        <span class="worker-meta-item">
+          <strong>UUID:</strong> <span style="font-family:monospace;font-size:11px">${escHtml(worker.worker_id)}</span>
+        </span>
+      </div>
+    </div>
+    <div class="worker-header-badge">
+      <span class="chip ${escHtml(statusChipClass)}">${escHtml(worker.status || 'unknown')}</span>
+    </div>
+  `;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SECTION 2: Render paycard section (edit or read-only)
+// ═════════════════════════════════════════════════════════════════════════════
+function renderPaycardSection(worker) {
+  const isPaycard = !!worker.is_paycard;
+
+  // Set initial chevron + body state
+  const chevron = document.getElementById('paycard-chevron');
+  const body    = document.getElementById('paycard-body');
+  if (isPaycard) {
+    body.classList.add('open');
+    chevron.classList.add('open');
+  } else {
+    body.classList.remove('open');
+    chevron.classList.remove('open');
+  }
+
+  if (READONLY) {
+    renderPaycardReadonly(worker, isPaycard);
+  } else {
+    renderPaycardEdit(worker, isPaycard);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Read-only render (spec §6)
+// ─────────────────────────────────────────────────────────────────
+function renderPaycardReadonly(worker, isPaycard) {
+  const checkboxRow = document.getElementById('paycard-checkbox-row');
+  const bodyInner   = document.getElementById('paycard-body-inner');
+
+  // Checkbox row — static span
+  checkboxRow.innerHTML = `
+    <span style="font-size:16px">${isPaycard ? '☑' : '☐'}</span>
+    <span class="checkbox-label readonly">This DD funds a paycard</span>
+  `;
+
+  if (!isPaycard) {
+    bodyInner.innerHTML = `
+      <div class="readonly-grid">
+        <span class="readonly-key">Paycard funding</span>
+        <span class="readonly-val none">None</span>
+      </div>
+    `;
+    // Body open/close still works via chevron; but collapse it by default
+    document.getElementById('paycard-body').classList.remove('open');
+    document.getElementById('paycard-chevron').classList.remove('open');
+    return;
+  }
+
+  const last4Display = worker.paycard_last4
+    ? `•••• ${escHtml(worker.paycard_last4)}`
+    : '—';
+  const issuedDisplay = worker.paycard_issued_at
+    ? formatDate(worker.paycard_issued_at)
+    : '—';
+  const statusChip = paycardStatusChip(worker.paycard_status || '');
+
+  bodyInner.innerHTML = `
+    <div class="readonly-grid">
+      <span class="readonly-key">Paycard funding</span>
+      <span class="readonly-val">☑ Yes</span>
+
+      <span class="readonly-key">Provider</span>
+      <span class="readonly-val">${escHtml(worker.paycard_provider || '—')}</span>
+
+      <span class="readonly-key">Card last 4</span>
+      <span class="readonly-val" style="font-family:monospace">${last4Display}</span>
+
+      <span class="readonly-key">Issued</span>
+      <span class="readonly-val">${issuedDisplay}</span>
+
+      <span class="readonly-key">Status</span>
+      <span class="readonly-val">${statusChip}</span>
+    </div>
+  `;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Edit render (default, spec §3 + §5)
+// ─────────────────────────────────────────────────────────────────
+function renderPaycardEdit(worker, isPaycard) {
+  const checkboxRow = document.getElementById('paycard-checkbox-row');
+  const bodyInner   = document.getElementById('paycard-body-inner');
+
+  // Checkbox
+  checkboxRow.innerHTML = `
+    <input
+      type="checkbox"
+      class="paycard-checkbox"
+      id="field-is-paycard"
+      ${isPaycard ? 'checked' : ''}
+    >
+    <label class="checkbox-label" for="field-is-paycard">This DD funds a paycard</label>
+  `;
+
+  // Sub-fields
+  const providerVal   = worker.paycard_provider  || '';
+  const last4Val      = worker.paycard_last4      || '';
+  const issuedVal     = worker.paycard_issued_at
+                          ? (worker.paycard_issued_at.split('T')[0] || worker.paycard_issued_at)
+                          : '';
+  const statusVal     = worker.paycard_status     || '';
+
+  bodyInner.innerHTML = `
+    <div class="paycard-fields${isPaycard ? '' : ' hidden'}" id="paycard-fields">
+      <div class="form-grid" style="grid-template-columns: repeat(auto-fill, minmax(190px, 1fr))">
+
+        <!-- Provider -->
+        <div class="form-group">
+          <label class="form-label" for="field-provider">
+            Provider <span class="required">*</span>
+          </label>
+          <select class="form-select" id="field-provider">
+            <option value="">— select —</option>
+            <option value="Blxck Pay"  ${providerVal === 'Blxck Pay'  ? 'selected' : ''}>Blxck Pay</option>
+            <option value="Comdata"    ${providerVal === 'Comdata'    ? 'selected' : ''}>Comdata</option>
+            <option value="FleetOne"   ${providerVal === 'FleetOne'   ? 'selected' : ''}>FleetOne</option>
+            <option value="ADP Wisely" ${providerVal === 'ADP Wisely' ? 'selected' : ''}>ADP Wisely</option>
+            <option value="Other"      ${providerVal === 'Other'      ? 'selected' : ''}>Other</option>
+          </select>
+          <div class="form-error" id="err-provider">Provider is required.</div>
+        </div>
+
+        <!-- Card last 4 -->
+        <div class="form-group">
+          <label class="form-label" for="field-last4">
+            Card Last 4 <span class="required">*</span>
+          </label>
+          <input
+            type="text"
+            class="form-input"
+            id="field-last4"
+            inputmode="numeric"
+            maxlength="4"
+            pattern="\\d{4}"
+            placeholder="0000"
+            autocomplete="off"
+            value="${escHtml(last4Val)}"
+            data-masked="${last4Val ? '1' : '0'}"
+          >
+          <div class="form-error" id="err-last4">Must be exactly 4 digits (0–9).</div>
+        </div>
+
+        <!-- Issued date -->
+        <div class="form-group">
+          <label class="form-label" for="field-issued-at">
+            Issued Date <span class="required">*</span>
+          </label>
+          <input
+            type="date"
+            class="form-input"
+            id="field-issued-at"
+            value="${escHtml(issuedVal)}"
+          >
+          <div class="form-error" id="err-issued-at">Issued date is required.</div>
+        </div>
+
+        <!-- Status -->
+        <div class="form-group">
+          <label class="form-label" for="field-status">Status</label>
+          <select class="form-select" id="field-status">
+            <option value="requested"  ${statusVal === 'requested'  ? 'selected' : ''}>requested</option>
+            <option value="ordered"    ${statusVal === 'ordered'    ? 'selected' : ''}>ordered</option>
+            <option value="in_transit" ${statusVal === 'in_transit' ? 'selected' : ''}>in_transit</option>
+            <option value="active"     ${statusVal === 'active'     ? 'selected' : ''}>active</option>
+            <option value="lost"       ${statusVal === 'lost'       ? 'selected' : ''}>lost</option>
+            <option value="replaced"   ${statusVal === 'replaced'   ? 'selected' : ''}>replaced</option>
+            <option value="cancelled"  ${statusVal === 'cancelled'  ? 'selected' : ''}>cancelled</option>
+          </select>
+          <!-- Soft state machine hint (spec §12 decision #5) -->
+          <div class="transition-hint" id="transition-hint">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style="flex-shrink:0">
+              <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8 7v5M8 5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span id="transition-hint-text"></span>
+            <button onclick="dismissTransitionHint()">Dismiss</button>
+          </div>
+        </div>
+
+      </div><!-- /form-grid -->
+    </div><!-- /paycard-fields -->
+  `;
+
+  // Attach event listeners
+  attachPaycardListeners();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Event listeners for paycard fields
+// ═════════════════════════════════════════════════════════════════════════════
+function attachPaycardListeners() {
+  const cbx         = document.getElementById('field-is-paycard');
+  const selProvider = document.getElementById('field-provider');
+  const inpLast4    = document.getElementById('field-last4');
+  const inpIssued   = document.getElementById('field-issued-at');
+  const selStatus   = document.getElementById('field-status');
+
+  if (!cbx) return; // readonly mode
+
+  // ── Checkbox change — immediate save (spec §7)
+  cbx.addEventListener('change', () => {
+    const nowChecked = cbx.checked;
+
+    if (nowChecked) {
+      // First-tick defaults (spec §3)
+      if (!selProvider.value) selProvider.value = 'Blxck Pay';
+      if (!inpIssued.value)   inpIssued.value   = todayISO();
+      if (!selStatus.value)   selStatus.value   = 'requested';
+
+      // Expand body
+      document.getElementById('paycard-body').classList.add('open');
+      document.getElementById('paycard-chevron').classList.add('open');
+      document.getElementById('paycard-fields').classList.remove('hidden');
+    } else {
+      // Collapse fields visually but keep body open to show checkbox
+      document.getElementById('paycard-fields').classList.add('hidden');
+    }
+
+    // Immediate save on checkbox change (no debounce)
+    clearTimeout(saveDebounceTimer);
+    triggerSave(true);
+  });
+
+  // ── Provider change
+  selProvider.addEventListener('change', () => scheduleSave());
+  selProvider.addEventListener('blur',   () => scheduleSave());
+
+  // ── Last4 — blur + masking
+  inpLast4.addEventListener('focus', () => {
+    // Unmask on focus: already shows raw value since input value is raw
+  });
+  inpLast4.addEventListener('blur', () => {
+    scheduleSave();
+  });
+  inpLast4.addEventListener('input', () => {
+    // Strip non-digits
+    inpLast4.value = inpLast4.value.replace(/\D/g, '').slice(0, 4);
+    clearError('last4');
+  });
+
+  // ── Issued date
+  inpIssued.addEventListener('blur',   () => scheduleSave());
+  inpIssued.addEventListener('change', () => scheduleSave());
+
+  // ── Status — soft state machine (spec §12 #5)
+  selStatus.addEventListener('change', () => {
+    checkStatusTransition(selStatus.value);
+    scheduleSave();
+  });
+  selStatus.addEventListener('blur', () => scheduleSave());
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Collapsible card toggle
+// ═════════════════════════════════════════════════════════════════════════════
+window.togglePaycardCard = function() {
+  const body    = document.getElementById('paycard-body');
+  const chevron = document.getElementById('paycard-chevron');
+  const isOpen  = body.classList.toggle('open');
+  chevron.classList.toggle('open', isOpen);
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Soft state machine — transition hints (spec §12 decision #5)
+// ═════════════════════════════════════════════════════════════════════════════
+// Unusual transitions that merit a gentle nudge (non-blocking)
+const UNUSUAL_TRANSITIONS = {
+  'requested→active':   'Typical path: requested → ordered → in_transit → active.',
+  'requested→replaced': 'Usually only replaced cards that were previously active.',
+  'requested→lost':     'A card not yet ordered is unlikely to be lost. Verify.',
+  'ordered→active':     'Typical path includes in_transit before active.',
+  'ordered→replaced':   'Usually a replacement follows an active or lost card.',
+  'in_transit→replaced':'Usually a replacement follows an active or lost card.',
+  'active→ordered':     'Moving active→ordered is unusual. Did you mean to re-issue?',
+  'active→requested':   'Moving active→requested is unusual. Check the intended status.',
+  'lost→ordered':       'Typical path after lost: update last4, set to replaced when new card arrives.',
+  'replaced→active':    'A replaced card going back to active is unusual.',
+  'cancelled→active':   'A cancelled card going to active is unusual. Verify intent.',
+};
+
+function checkStatusTransition(newStatus) {
+  const oldStatus = originalSnap.paycard_status || workerData?.paycard_status || '';
+  if (!oldStatus || oldStatus === newStatus) { dismissTransitionHint(); return; }
+  const key = `${oldStatus}→${newStatus}`;
+  const hint = UNUSUAL_TRANSITIONS[key];
+  if (hint) {
+    const el = document.getElementById('transition-hint');
+    document.getElementById('transition-hint-text').textContent = hint;
+    if (el) el.classList.add('show');
+  } else {
+    dismissTransitionHint();
+  }
+}
+
+window.dismissTransitionHint = function() {
+  const el = document.getElementById('transition-hint');
+  if (el) el.classList.remove('show');
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Save — debounced + immediate (spec §7)
+// ═════════════════════════════════════════════════════════════════════════════
+function scheduleSave() {
+  clearTimeout(saveDebounceTimer);
+  saveDebounceTimer = setTimeout(() => triggerSave(false), 800);
+}
+
+async function triggerSave(immediate) {
+  if (!workerData) return;
+  const wid = workerData.worker_id;
+
+  const cbx       = document.getElementById('field-is-paycard');
+  const isPaycard = cbx ? cbx.checked : workerData.is_paycard;
+
+  // Build payload from current DOM values
+  const current = readPaycardDOM(isPaycard);
+
+  // Validate before save
+  if (isPaycard) {
+    const valid = validatePaycard(current);
+    if (!valid) return; // inline errors already shown; don't block but don't save invalid
+  }
+
+  // Diff against original snapshot
+  const diff = diffPaycard(originalSnap, current);
+  if (Object.keys(diff).length === 0) return; // nothing changed
+
+  // Optimistic UI
+  setSaveIndicator('saving', 'Saving…');
+
+  try {
+    const { error } = await sb
+      .schema('hris')
+      .from('workers')
+      .update(diff)
+      .eq('worker_id', wid);
+
+    if (error) throw error;
+
+    // Write audit rows (non-blocking — spec §8)
+    writeAuditRows(wid, originalSnap, current, diff).catch(auditErr => {
+      // NOTE: Requires audit schema to be exposed in PostgREST
+      //   (Settings → API → Exposed schemas → add "audit")
+      // If audit insert fails, log to console only — do NOT fail the main save.
+      console.warn('[audit] Failed to write audit row:', auditErr?.message || auditErr);
+    });
+
+    // Update snapshot
+    Object.assign(originalSnap, current);
+    Object.assign(workerData, diff);
+
+    setSaveIndicator('saved', 'Saved');
+    showToast('Paycard info saved.', 'success', 3000);
+
+    // Auto-clear save indicator after 4s
+    setTimeout(() => setSaveIndicator('', ''), 4000);
+
+  } catch(err) {
+    setSaveIndicator('error', 'Save failed');
+    showToast('Failed to save paycard info. Please try again.', 'error'); // persistent (no auto-dismiss)
+    // Revert optimistic UI if applicable
+    revertDOM(originalSnap);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Read current DOM values into a normalized object
+// ─────────────────────────────────────────────────────────────────
+function readPaycardDOM(isPaycard) {
+  if (!isPaycard) {
+    // Unchecking — determine status to set based on current active status (spec §10.1)
+    const currentStatus = workerData?.paycard_status || originalSnap.paycard_status || '';
+    let finalStatus;
+    if (currentStatus === 'active') {
+      finalStatus = 'replaced';
+    } else if (['requested', 'ordered', 'in_transit'].includes(currentStatus)) {
+      finalStatus = 'cancelled';
+    } else {
+      finalStatus = currentStatus; // already replaced/cancelled/lost etc. — leave as-is
+    }
+
+    return {
+      is_paycard:        false,
+      paycard_provider:  null,
+      paycard_last4:     null,
+      paycard_issued_at: null,
+      paycard_status:    finalStatus || null,
+    };
+  }
+
+  const providerEl = document.getElementById('field-provider');
+  const last4El    = document.getElementById('field-last4');
+  const issuedEl   = document.getElementById('field-issued-at');
+  const statusEl   = document.getElementById('field-status');
+
+  const provider  = providerEl  ? providerEl.value.trim()  || null : null;
+  const last4     = last4El     ? last4El.value.trim()     || null : null;
+  const issuedRaw = issuedEl    ? issuedEl.value           || null : null;
+  const status    = statusEl    ? statusEl.value           || 'requested' : 'requested';
+
+  // Convert date to UTC midnight ISO string for timestamptz column
+  const issuedAt = issuedRaw ? issuedRaw + 'T00:00:00.000Z' : null;
+
+  return {
+    is_paycard:        true,
+    paycard_provider:  provider,
+    paycard_last4:     last4,
+    paycard_issued_at: issuedAt,
+    paycard_status:    status,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Diff: only send columns that changed (spec §7)
+// ─────────────────────────────────────────────────────────────────
+function diffPaycard(old, current) {
+  const diff = {};
+  const fields = ['is_paycard', 'paycard_provider', 'paycard_last4', 'paycard_issued_at', 'paycard_status'];
+  for (const f of fields) {
+    // Normalize for comparison: treat undefined as null
+    const oldVal = old[f] ?? null;
+    const newVal = current[f] ?? null;
+
+    // Date comparison: compare only date portion for timestamptz
+    if (f === 'paycard_issued_at') {
+      const oldDate = oldVal ? oldVal.split('T')[0] : null;
+      const newDate = newVal ? newVal.split('T')[0] : null;
+      if (oldDate !== newDate) diff[f] = newVal;
+    } else {
+      if (oldVal !== newVal) diff[f] = newVal;
+    }
+  }
+  return diff;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Snapshot: paycard fields only
+// ─────────────────────────────────────────────────────────────────
+function snapshotPaycard(worker) {
+  return {
+    is_paycard:        worker.is_paycard        ?? false,
+    paycard_provider:  worker.paycard_provider  ?? null,
+    paycard_last4:     worker.paycard_last4      ?? null,
+    paycard_issued_at: worker.paycard_issued_at  ?? null,
+    paycard_status:    worker.paycard_status     ?? null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Revert DOM to snapshot values on save error
+// ─────────────────────────────────────────────────────────────────
+function revertDOM(snap) {
+  const cbx      = document.getElementById('field-is-paycard');
+  const provider = document.getElementById('field-provider');
+  const last4    = document.getElementById('field-last4');
+  const issued   = document.getElementById('field-issued-at');
+  const status   = document.getElementById('field-status');
+
+  if (cbx)      cbx.checked   = !!snap.is_paycard;
+  if (provider) provider.value = snap.paycard_provider || '';
+  if (last4)    last4.value    = snap.paycard_last4     || '';
+  if (issued) {
+    issued.value = snap.paycard_issued_at
+      ? snap.paycard_issued_at.split('T')[0]
+      : '';
+  }
+  if (status) status.value = snap.paycard_status || 'requested';
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Validation (spec §4)
+// ═════════════════════════════════════════════════════════════════════════════
+function validatePaycard(current) {
+  let valid = true;
+
+  if (!current.is_paycard) return true; // nothing to validate when unchecked
+
+  // Provider required
+  if (!current.paycard_provider) {
+    showError('provider');
+    valid = false;
+  } else {
+    clearError('provider');
+  }
+
+  // Last4: must be exactly 4 digits
+  if (!current.paycard_last4 || !/^\d{4}$/.test(current.paycard_last4)) {
+    showError('last4');
+    valid = false;
+  } else {
+    clearError('last4');
+  }
+
+  // Issued date required
+  if (!current.paycard_issued_at) {
+    showError('issued-at');
+    valid = false;
+  } else {
+    clearError('issued-at');
+  }
+
+  // Status: if empty, default to 'requested' (should not happen with dropdown)
+  if (!current.paycard_status) {
+    const sel = document.getElementById('field-status');
+    if (sel) sel.value = 'requested';
+  }
+
+  return valid;
+}
+
+function showError(fieldKey) {
+  const inp = document.getElementById(`field-${fieldKey}`);
+  const err = document.getElementById(`err-${fieldKey}`);
+  if (inp) inp.classList.add('invalid');
+  if (err) err.classList.add('show');
+}
+
+function clearError(fieldKey) {
+  const inp = document.getElementById(`field-${fieldKey}`);
+  const err = document.getElementById(`err-${fieldKey}`);
+  if (inp) inp.classList.remove('invalid');
+  if (err) err.classList.remove('show');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AUDIT LOGGING (spec §8 — decisions locked 2026-05-20)
+//
+// ⚠ DEPENDENCY: Requires audit schema to be exposed in PostgREST.
+//    Supabase Dashboard → Settings → API → Exposed schemas → add "audit"
+//    If this schema is not exposed, inserts will fail with a 404/401.
+//    Main save is NOT blocked by audit failures (graceful degrade).
+//
+// TODO: Replace changed_by: null with auth user id when auth is wired.
+// ═════════════════════════════════════════════════════════════════════════════
+async function writeAuditRows(wid, oldSnap, newSnap, diff) {
+  const changedAt = new Date().toISOString();
+
+  const rows = Object.keys(diff).map(col => ({
+    table_name:  'hris.workers',
+    record_id:   wid,
+    action:      'update',
+    column_name: col,
+    old_value:   stringifyAuditVal(oldSnap[col]),
+    new_value:   stringifyAuditVal(newSnap[col]),
+    changed_at:  changedAt,
+    changed_by:  null, // TODO: replace with auth user id when wired
+  }));
+
+  if (!rows.length) return;
+
+  const { error } = await sb
+    .schema('audit')
+    .from('log')
+    .insert(rows);
+
+  if (error) throw error;
+}
+
+function stringifyAuditVal(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'boolean') return String(val);
+  return String(val);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Save indicator
+// ═════════════════════════════════════════════════════════════════════════════
+function setSaveIndicator(state, text) {
+  const ind  = document.getElementById('global-save-indicator');
+  const txt  = document.getElementById('global-save-text');
+  if (!ind || !txt) return;
+  ind.className = `save-indicator${state ? ' ' + state : ''}`;
+  txt.textContent = text;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// UI helpers
+// ═════════════════════════════════════════════════════════════════════════════
+function showSpinner(on) {
+  const el = document.getElementById('global-spinner');
+  if (on) el.classList.add('show');
+  else    el.classList.remove('show');
+}
+
+window.hideBanner = function() {
+  document.getElementById('error-banner').classList.remove('show');
+};
+
+window.hideInfoBanner = function() {
+  document.getElementById('info-banner').classList.remove('show');
+};
+
+function showBanner(msg) {
+  document.getElementById('error-banner-text').textContent = msg;
+  document.getElementById('error-banner').classList.add('show');
+}
+
+function showInfoBanner(msg) {
+  document.getElementById('info-banner-text').textContent = msg;
+  document.getElementById('info-banner').classList.add('show');
+}
+
+function showToast(msg, type = 'success', duration = 0) {
+  const container = document.getElementById('toast-container');
+  const toast     = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span>${escHtml(msg)}</span><button class="toast-close" onclick="this.parentElement.remove()">×</button>`;
+  container.appendChild(toast);
+  requestAnimationFrame(() => { requestAnimationFrame(() => toast.classList.add('show')); });
+
+  // duration=0 means persistent (error toasts); otherwise auto-dismiss
+  if (duration > 0) {
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+
+  // Cap at 5 toasts
+  const toasts = container.querySelectorAll('.toast');
+  if (toasts.length > 5) toasts[0].remove();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Formatting helpers
+// ═════════════════════════════════════════════════════════════════════════════
+function formatDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso.includes('T') ? iso : iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function todayISO() {
+  return new Date().toISOString().split('T')[0];
+}
+
+function paycardStatusChip(status) {
+  const classMap = {
+    active:     'chip-active',
+    requested:  'chip-requested',
+    ordered:    'chip-ordered',
+    in_transit: 'chip-in_transit',
+    lost:       'chip-lost',
+    replaced:   'chip-replaced',
+    cancelled:  'chip-cancelled',
+  };
+  const cls = classMap[status] || 'chip-cancelled';
+  return `<span class="chip ${cls}">${escHtml(status || '—')}</span>`;
+}
+
+function escHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#039;');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Expose globals needed by inline onclick handlers
+// ═════════════════════════════════════════════════════════════════════════════
+window.togglePaycardCard   = togglePaycardCard;
+window.selectPickerWorker  = selectPickerWorker;
+window.dismissTransitionHint = dismissTransitionHint;
+window.hideBanner          = hideBanner;
+window.hideInfoBanner      = hideInfoBanner;
+
+</script>
+</body>
+</html>
