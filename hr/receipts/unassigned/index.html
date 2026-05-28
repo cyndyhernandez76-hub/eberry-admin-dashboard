@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+<!--
+  eBerry Admin Dashboard — Unassigned Receipts
+  ============================================
+  HR admin view for triaging and assigning worker expense receipts that
+  arrived without a worker/pay-period match. Built for Jessica (HR admin).
+
+  SECTIONS:
+    KPI strip (4 cards): unassigned count, total $ pending, oldest age, warnings
+    Toolbar: bulk-assign button, filter toggle, search input
+    Filter drawer (collapsible, localStorage-persisted)
+    Receipt list (cards with thumbnail, OCR summary, badges, assign button)
+    Assignment panel (slide-in drawer for single assign)
+    Bulk-assign modal (multi-receipt batch)
+
+  RPCs CALLED:
+    public.get_unassigned_receipts_kpis()
+    public.search_h2a_workers(p_query, p_limit)
+    public.get_open_pay_periods_for_worker(p_worker_id)
+    public.receipt_assign(p_submission_id, p_worker_id, p_pay_period_id,
+                          p_category_code, p_amount_approved, p_notes)
+
+  VIEW READ (via supabase.schema('hris').from()):
+    hris.v_unassigned_receipts
+
+  TABLE READ (via supabase.schema('hris').from()):
+    hris.expense_category   (active categories for dropdown)
+
+  STORAGE:
+    expense-receipts bucket — signed URLs, 1-hour expiry, lazy-loaded
+
+  CONFIG:
+    Expects window.__APP_CONFIG__ = { SUPABASE_URL, SUPABASE_ANON_KEY }
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBerry — Unassigned Receipts</title>
+<link rel="icon" href="/eberry-admin-dashboard/favicon.svg">
+<meta name="theme-color" content="#01696F">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  background: #F7F6F2;
+  color: #28251D;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+:root {
+  --bg:          #F7F6F2;
+  --surface:     #FFFFFF;
+  --surface-alt: #F9F8F5;
+  --border:      #D4D1CA;
+  --text:        #28251D;
+  --text-muted:  #7A7974;
+  --text-faint:  #BAB9B4;
+  --primary:     #01696F;
+  --primary-hv:  #0C4E54;
+  --error:       #A12C7B;
+  --warning:     #964219;
+  --success:     #437A22;
+  --radius:      7px;
+  --radius-lg:   11px;
+  --shadow:      0 1px 4px rgba(0,0,0,.08);
+  --shadow-lg:   0 8px 24px rgba(0,0,0,.12);
+  --tabular-nums: tabular-nums;
+}
+
+/* Header */
+.page-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.page-header-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.page-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.page-subtitle { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.back-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.back-link:hover { color: var(--primary-hv); }
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+.container { max-width: 1400px; margin: 0 auto; padding: 16px 20px 60px; }
+
+/* Buttons */
+button { cursor: pointer; font-family: inherit; font-size: 13px; border-radius: var(--radius); transition: all .15s; }
+.btn-primary {
+  background: var(--primary); color: #fff; border: none;
+  padding: 0 16px; height: 34px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary:hover { background: var(--primary-hv); }
+.btn-primary:disabled { opacity: .45; cursor: default; }
+.btn-secondary {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); padding: 0 13px; height: 34px;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.btn-secondary:hover { background: var(--surface-alt); }
+.btn-secondary:disabled { opacity: .45; cursor: default; }
+.btn-ghost {
+  background: none; border: none; color: var(--primary); padding: 0 8px; height: 28px; font-size: 12px;
+}
+.btn-ghost:hover { color: var(--primary-hv); text-decoration: underline; }
+.btn-danger {
+  background: #FBEEEF; color: var(--error); border: 1px solid #E9CCD7;
+  padding: 0 12px; height: 28px; font-size: 12px; font-weight: 600;
+}
+.btn-danger:hover { background: #F6DDE3; }
+.btn-mini {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0 9px; height: 24px; font-size: 11px; font-weight: 500;
+  border-radius: 5px;
+}
+.btn-mini:hover { background: var(--surface-alt); }
+
+/* KPI strip */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (max-width: 720px) { .kpi-strip { grid-template-columns: repeat(2, 1fr); } }
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kpi-value {
+  font-size: 24px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.kpi-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
+.kpi-detail { font-size: 11px; color: var(--text-faint); }
+.kpi-value.warning { color: var(--warning); }
+.kpi-value.error { color: var(--error); }
+.kpi-value.primary { color: var(--primary); }
+
+/* Toolbar */
+.toolbar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.toolbar-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.select-all-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+.search-input {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0 10px; height: 30px; font-size: 13px; font-family: inherit;
+  background: var(--surface); color: var(--text);
+  width: 220px;
+}
+.search-input:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: var(--primary); }
+
+/* Filter drawer */
+.filter-drawer {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  display: none;
+}
+.filter-drawer.open { display: block; }
+.filter-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.filter-field { display: flex; flex-direction: column; gap: 4px; }
+.filter-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
+.filter-checks { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.filter-check-label { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; }
+.filter-actions { display: flex; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.amount-range { display: flex; align-items: center; gap: 6px; }
+.amount-range input { width: 80px; }
+input[type="text"], input[type="number"], input[type="search"], select, textarea {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0 10px; height: 32px; font-size: 13px; font-family: inherit;
+  background: var(--surface); color: var(--text);
+}
+input[type="text"]:focus, input[type="number"]:focus, input[type="search"]:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--primary); outline-offset: -1px; border-color: var(--primary);
+}
+textarea { padding: 8px 10px; height: auto; resize: vertical; min-height: 60px; }
+input[type="checkbox"] { accent-color: var(--primary); cursor: pointer; }
+
+/* Receipt list */
+.receipt-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.receipt-row {
+  display: grid;
+  grid-template-columns: 36px 64px 110px 1fr 90px 110px 100px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  transition: background .15s;
+}
+.receipt-row:last-child { border-bottom: none; }
+.receipt-row:hover { background: var(--surface-alt); }
+.receipt-row.selected { background: #E6F0F0; }
+.receipt-row.stale { border-left: 3px solid var(--warning); padding-left: 13px; }
+@media (max-width: 980px) {
+  .receipt-row { grid-template-columns: 32px 56px 1fr 100px; }
+  .receipt-row .col-vendor, .receipt-row .col-date { display: none; }
+}
+
+.col-check { display: flex; justify-content: center; }
+.col-thumb {
+  width: 56px; height: 56px; border-radius: var(--radius);
+  background: var(--surface-alt); border: 1px solid var(--border);
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint); font-size: 11px; text-align: center;
+}
+.col-thumb img { width: 100%; height: 100%; object-fit: cover; cursor: pointer; }
+.col-thumb.placeholder { background: #F0EFEB; }
+.col-amount {
+  font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.col-amount .sub { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.col-vendor { min-width: 0; }
+.col-vendor .vendor-name {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.col-vendor .vendor-meta { font-size: 12px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.col-date { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.col-cat { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.col-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+/* Badges */
+.badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 9px;
+  text-transform: capitalize;
+}
+.badge-cat-inbound { background: #DBE9F3; color: #0E5180; }
+.badge-cat-outbound { background: #E8DAF1; color: #5A1F86; }
+.badge-cat-travel { background: #D4ECEE; color: #0C4E54; }
+.badge-cat-training { background: #F5E8C9; color: #6E4D0A; }
+.badge-cat-other { background: #EDECE8; color: #54534F; }
+.badge-age { background: #EDECE8; color: var(--text-muted); }
+.badge-age.stale { background: #FBE7D1; color: var(--warning); }
+.badge-warn { background: #FBE7D1; color: var(--warning); }
+.badge-noimg { background: #EDECE8; color: var(--text-muted); }
+.badge-status { background: #DBE9F3; color: #0E5180; }
+.badge-status.submitted { background: #DCEFD0; color: var(--success); }
+.badge-status.under_review { background: #FBE7D1; color: var(--warning); }
+.badge-status.draft { background: #EDECE8; color: var(--text-muted); }
+
+/* Empty / loading / error states */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+.empty-state-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.empty-state-body { font-size: 13px; }
+.skeleton {
+  background: linear-gradient(90deg, #EDECE8 0%, #F5F4F0 50%, #EDECE8 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius);
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+.error-banner {
+  background: #FBEEEF; border: 1px solid #E9CCD7; color: var(--error);
+  padding: 12px 16px; border-radius: var(--radius);
+  margin-bottom: 14px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+/* Slide-in panel (assignment drawer) */
+.panel-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.32);
+  z-index: 100;
+  display: none;
+  animation: fadeIn .2s;
+}
+.panel-backdrop.open { display: block; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 100%; max-width: 460px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  z-index: 110;
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .25s ease-out;
+}
+.panel.open { transform: translateX(0); }
+.panel-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0;
+}
+.panel-title { font-size: 16px; font-weight: 700; }
+.panel-close {
+  background: none; border: none; font-size: 22px;
+  color: var(--text-muted); cursor: pointer; padding: 4px 8px;
+  line-height: 1;
+}
+.panel-close:hover { color: var(--text); }
+.panel-body {
+  flex: 1; overflow-y: auto;
+  padding: 16px 20px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.panel-footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  display: flex; gap: 10px; justify-content: flex-end;
+  flex-shrink: 0;
+  background: var(--surface-alt);
+}
+
+.preview-image {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  cursor: pointer;
+}
+.preview-noimage {
+  width: 100%; height: 120px;
+  background: var(--surface-alt);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); font-size: 13px;
+}
+.preview-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-size: 12px;
+}
+.preview-meta dt { color: var(--text-muted); }
+.preview-meta dd { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field-label {
+  font-size: 11px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .03em;
+  font-weight: 600;
+}
+.field-label .req { color: var(--error); }
+.field-help { font-size: 11px; color: var(--text-faint); }
+.field-warn { font-size: 11px; color: var(--warning); }
+.field-error { font-size: 11px; color: var(--error); }
+.field input, .field select, .field textarea { width: 100%; }
+
+/* Worker search combobox */
+.combo { position: relative; }
+.combo-results {
+  position: absolute; top: 100%; left: 0; right: 0;
+  margin-top: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  max-height: 280px; overflow-y: auto;
+  z-index: 5;
+  display: none;
+}
+.combo-results.open { display: block; }
+.combo-option {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.combo-option:last-child { border-bottom: none; }
+.combo-option:hover, .combo-option.highlight { background: var(--surface-alt); }
+.combo-option .row1 { font-weight: 600; color: var(--text); }
+.combo-option .row2 { font-size: 11px; color: var(--text-muted); }
+.combo-option.inactive .row1 { color: var(--warning); }
+.combo-option.no-farm .row1 { color: var(--error); }
+.combo-empty {
+  padding: 12px; text-align: center;
+  color: var(--text-muted); font-size: 12px;
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #E6F0F0; color: var(--primary);
+  padding: 4px 8px 4px 10px;
+  border-radius: 14px;
+  font-size: 12px; font-weight: 600;
+}
+.chip-x {
+  background: none; border: none; color: var(--primary);
+  font-size: 14px; cursor: pointer; padding: 0 2px;
+  line-height: 1;
+}
+.chip-x:hover { color: var(--primary-hv); }
+
+.panel-error {
+  background: #FBEEEF; border: 1px solid #E9CCD7; color: var(--error);
+  padding: 10px 12px; border-radius: var(--radius); font-size: 12px;
+}
+.panel-warn {
+  background: #FBE7D1; border: 1px solid #E6CAA0; color: var(--warning);
+  padding: 10px 12px; border-radius: var(--radius); font-size: 12px;
+}
+
+/* Toast */
+.toast-container {
+  position: fixed; bottom: 20px; right: 20px;
+  z-index: 200;
+  display: flex; flex-direction: column; gap: 8px;
+  max-width: 360px;
+}
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--success);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 14px;
+  font-size: 13px;
+  animation: slideIn .25s;
+}
+@keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.toast.error { border-left-color: var(--error); }
+.toast.warning { border-left-color: var(--warning); }
+.toast-title { font-weight: 600; margin-bottom: 2px; }
+.toast-body { color: var(--text-muted); }
+
+/* Lightbox */
+.lightbox {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.85);
+  z-index: 300;
+  display: none;
+  align-items: center; justify-content: center;
+  padding: 40px;
+}
+.lightbox.open { display: flex; }
+.lightbox img {
+  max-width: 100%; max-height: 100%;
+  object-fit: contain;
+}
+.lightbox-close {
+  position: absolute; top: 20px; right: 24px;
+  background: none; border: none; color: #fff;
+  font-size: 32px; cursor: pointer; line-height: 1;
+}
+
+/* Bulk modal */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.32);
+  z-index: 100;
+  display: none;
+  align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 100%; max-width: 480px;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+}
+.modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.modal-body {
+  padding: 16px 20px;
+  display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto;
+}
+.modal-footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  display: flex; gap: 10px; justify-content: flex-end;
+  background: var(--surface-alt);
+}
+
+/* Sidebar - hidden on mobile (we don't have one in standalone) */
+.crumbs {
+  font-size: 12px; color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.crumbs a { color: var(--primary); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.flash-removed {
+  animation: flashOut .6s forwards;
+}
+@keyframes flashOut {
+  0% { background: #DCEFD0; }
+  100% { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; border: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div class="page-header-left">
+    <a href="/eberry-admin-dashboard/" class="back-link">← Home</a>
+    <div>
+      <div class="page-title">Unassigned Receipts</div>
+      <div class="page-subtitle">HR · Reimbursements</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="btn-secondary" id="refreshBtn" title="Refresh">↻ Refresh</button>
+  </div>
+</header>
+
+<div class="container">
+  <div class="crumbs">
+    <a href="/eberry-admin-dashboard/">Home</a> ›
+    HR ›
+    Reimbursements ›
+    <span>Unassigned</span>
+  </div>
+
+  <div id="errorBanner" class="error-banner" style="display:none;">
+    <span id="errorBannerText"></span>
+    <button class="btn-mini" onclick="loadAll()">Retry</button>
+  </div>
+
+  <!-- KPI Strip -->
+  <section class="kpi-strip" aria-label="Key metrics">
+    <div class="kpi-card">
+      <div class="kpi-value primary" id="kpiUnassigned">--</div>
+      <div class="kpi-label">Unassigned</div>
+      <div class="kpi-detail">receipts pending review</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpiPending">--</div>
+      <div class="kpi-label">Total $ Pending</div>
+      <div class="kpi-detail" id="kpiPendingDetail">sum of receipt totals</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpiOldest">--</div>
+      <div class="kpi-label">Oldest Item</div>
+      <div class="kpi-detail" id="kpiOldestDetail">days since upload</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpiWarnings">--</div>
+      <div class="kpi-label">Needs Attention</div>
+      <div class="kpi-detail" id="kpiWarningsDetail">low OCR + no image</div>
+    </div>
+  </section>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <label class="select-all-label">
+        <input type="checkbox" id="selectAll" />
+        Select all
+      </label>
+      <button class="btn-primary" id="bulkAssignBtn" disabled>
+        Bulk Assign (<span id="bulkCount">0</span>)
+      </button>
+      <button class="btn-secondary" id="filterToggle" aria-expanded="false">
+        Filters <span id="filterChevron">▼</span>
+        <span id="filterBadge" style="display:none; background:var(--primary); color:#fff; border-radius:9px; padding:1px 7px; font-size:11px; margin-left:4px;"></span>
+      </button>
+    </div>
+    <div class="toolbar-right">
+      <input type="search" class="search-input" id="searchInput" placeholder="Search vendor, H-code, name..." />
+    </div>
+  </div>
+
+  <!-- Filter drawer -->
+  <div class="filter-drawer" id="filterDrawer">
+    <div class="filter-row">
+      <div class="filter-field">
+        <label class="filter-label">Status</label>
+        <div class="filter-checks">
+          <label class="filter-check-label"><input type="checkbox" class="f-status" value="draft" checked /> draft</label>
+          <label class="filter-check-label"><input type="checkbox" class="f-status" value="submitted" checked /> submitted</label>
+          <label class="filter-check-label"><input type="checkbox" class="f-status" value="under_review" checked /> under_review</label>
+        </div>
+      </div>
+      <div class="filter-field">
+        <label class="filter-label">Category</label>
+        <select id="filterCategory">
+          <option value="">All categories</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label class="filter-label">Amount range (USD)</label>
+        <div class="amount-range">
+          <input type="number" id="filterAmountMin" placeholder="Min" step="0.01" min="0" />
+          <span>–</span>
+          <input type="number" id="filterAmountMax" placeholder="Max" step="0.01" min="0" />
+        </div>
+      </div>
+      <div class="filter-field">
+        <label class="filter-label">Flags</label>
+        <div class="filter-checks">
+          <label class="filter-check-label"><input type="checkbox" id="filterStale" /> Stale (>7d)</label>
+          <label class="filter-check-label"><input type="checkbox" id="filterNoImage" /> No image</label>
+          <label class="filter-check-label"><input type="checkbox" id="filterLowConf" /> Low OCR</label>
+        </div>
+      </div>
+    </div>
+    <div class="filter-actions">
+      <button class="btn-primary" id="filterApply">Apply</button>
+      <button class="btn-secondary" id="filterReset">Reset</button>
+    </div>
+  </div>
+
+  <!-- Receipt list -->
+  <div class="receipt-list" id="receiptList">
+    <div class="empty-state">
+      <div class="spinner"></div>
+      <div style="margin-top:10px;">Loading receipts…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Assignment Panel -->
+<div class="panel-backdrop" id="panelBackdrop"></div>
+<aside class="panel" id="assignPanel" role="dialog" aria-labelledby="assignPanelTitle" aria-hidden="true">
+  <header class="panel-header">
+    <div class="panel-title" id="assignPanelTitle">Assign Receipt</div>
+    <button class="panel-close" id="panelClose" aria-label="Close">×</button>
+  </header>
+  <div class="panel-body" id="panelBody">
+    <!-- Filled dynamically -->
+  </div>
+  <footer class="panel-footer">
+    <button class="btn-secondary" id="panelCancel">Cancel</button>
+    <button class="btn-primary" id="panelSubmit" disabled>Assign ✓</button>
+  </footer>
+</aside>
+
+<!-- Bulk Assign Modal -->
+<div class="modal-backdrop" id="bulkModal" role="dialog" aria-labelledby="bulkModalTitle" aria-hidden="true">
+  <div class="modal">
+    <header class="modal-header">
+      <div class="panel-title" id="bulkModalTitle">Bulk Assign Receipts</div>
+      <button class="panel-close" id="bulkClose" aria-label="Close">×</button>
+    </header>
+    <div class="modal-body" id="bulkBody">
+      <!-- Filled dynamically -->
+    </div>
+    <footer class="modal-footer">
+      <button class="btn-secondary" id="bulkCancel">Cancel</button>
+      <button class="btn-primary" id="bulkSubmit" disabled>Assign All →</button>
+    </footer>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lightbox-close" aria-label="Close lightbox">×</button>
+  <img id="lightboxImg" alt="Receipt full view" />
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// =============== CONFIG ===============
+const cfg = window.__APP_CONFIG__ || {};
+const SUPABASE_URL = cfg.SUPABASE_URL || 'https://opdwtijyropzoyeseoij.supabase.co';
+const SUPABASE_ANON_KEY = cfg.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9wZHd0aWp5cm9wem95ZXNlb2lqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg2NzcwODcsImV4cCI6MjA2NDI1MzA4N30.qaTjeCMD33b9PqRRZHi-Mh-kKLDPbJGgyHWAuO0ad88';
+
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// =============== STATE ===============
+const STORAGE_KEY = 'eberry.unassigned_receipts.filters';
+
+const state = {
+  receipts: [],
+  filteredReceipts: [],
+  kpis: null,
+  categories: [],
+  selectedIds: new Set(),
+  signedUrlCache: new Map(),     // submission_id -> { url, expiresAt }
+  filters: loadFilters(),
+  searchQuery: '',
+  panel: {
+    open: false,
+    isBulk: false,
+    submissionId: null,
+    receipt: null,
+    workerQuery: '',
+    workerResults: [],
+    workerLoading: false,
+    selectedWorker: null,
+    payPeriods: [],
+    payPeriodsLoading: false,
+    selectedPayPeriodId: null,
+    selectedCategoryCode: null,
+    amountApproved: '',
+    note: '',
+    isSubmitting: false,
+    submitError: null,
+    submitWarning: null,
+  },
+  bulk: {
+    open: false,
+    selectedWorker: null,
+    workerQuery: '',
+    workerResults: [],
+    workerLoading: false,
+    payPeriods: [],
+    payPeriodsLoading: false,
+    selectedPayPeriodId: null,
+    note: '',
+    progress: { total: 0, done: 0, failed: 0, errors: [] },
+    isSubmitting: false,
+  },
+};
+
+function loadFilters() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaultFilters();
+    const parsed = JSON.parse(raw);
+    return { ...defaultFilters(), ...parsed };
+  } catch { return defaultFilters(); }
+}
+function defaultFilters() {
+  return {
+    statusList: ['draft', 'submitted', 'under_review'],
+    categoryCode: null,
+    amountMin: null,
+    amountMax: null,
+    staleOnly: false,
+    noImageOnly: false,
+    lowConfidenceOnly: false,
+  };
+}
+function saveFilters() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.filters));
+}
+
+// =============== FORMATTING ===============
+const fmtUSD = (v) => v == null ? '—' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtDate = (s) => {
+  if (!s) return '—';
+  const d = new Date(s + (s.length === 10 ? 'T00:00:00' : ''));
+  if (isNaN(d)) return s;
+  return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: '2-digit' });
+};
+const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// =============== DATA LOAD ===============
+async function loadKpis() {
+  const { data, error } = await sb.rpc('get_unassigned_receipts_kpis');
+  if (error) throw error;
+  // RPC returns either object or single-row array
+  state.kpis = Array.isArray(data) ? (data[0] || {}) : (data || {});
+  renderKpis();
+}
+
+async function loadReceipts() {
+  let query = sb.schema('hris').from('v_unassigned_receipts').select('*');
+  // Server-side filter where cheap
+  if (state.filters.statusList.length > 0 && state.filters.statusList.length < 3) {
+    query = query.in('status', state.filters.statusList);
+  }
+  if (state.filters.categoryCode) {
+    query = query.eq('category_code', state.filters.categoryCode);
+  }
+  query = query
+    .order('is_stale', { ascending: false })
+    .order('age_days', { ascending: false })
+    .order('created_at', { ascending: true });
+
+  const { data, error } = await query;
+  if (error) throw error;
+  state.receipts = data || [];
+  applyClientFilters();
+  renderList();
+}
+
+async function loadCategories() {
+  const { data, error } = await sb.schema('hris').from('expense_category').select('category_code, label_en, label_es').eq('active', true).order('category_code');
+  if (error) { console.warn('Category load failed', error); return; }
+  state.categories = data || [];
+  // Populate filter and panel dropdowns
+  const sel = document.getElementById('filterCategory');
+  for (const c of state.categories) {
+    const opt = document.createElement('option');
+    opt.value = c.category_code;
+    opt.textContent = c.label_en || c.category_code;
+    sel.appendChild(opt);
+  }
+  if (state.filters.categoryCode) sel.value = state.filters.categoryCode;
+}
+
+async function loadAll() {
+  showError(null);
+  try {
+    await Promise.all([loadKpis(), loadReceipts()]);
+  } catch (e) {
+    console.error(e);
+    showError(e.message || 'Failed to load data');
+  }
+}
+
+function showError(msg) {
+  const banner = document.getElementById('errorBanner');
+  if (!msg) { banner.style.display = 'none'; return; }
+  document.getElementById('errorBannerText').textContent = msg;
+  banner.style.display = 'flex';
+}
+
+// =============== FILTER (client-side) ===============
+function applyClientFilters() {
+  const f = state.filters;
+  const q = state.searchQuery.trim().toLowerCase();
+  state.filteredReceipts = state.receipts.filter(r => {
+    // status (catches when only some statuses selected and server didn't filter)
+    if (f.statusList.length > 0 && !f.statusList.includes(r.status)) return false;
+    if (f.staleOnly && !r.is_stale) return false;
+    if (f.noImageOnly && !r.no_image) return false;
+    if (f.lowConfidenceOnly && !r.ocr_low_confidence) return false;
+    if (f.amountMin != null && (r.display_amount_usd ?? r.amount_submitted ?? 0) < f.amountMin) return false;
+    if (f.amountMax != null && (r.display_amount_usd ?? r.amount_submitted ?? 0) > f.amountMax) return false;
+    if (q) {
+      const hay = [
+        r.ocr_vendor_name, r.business_purpose, r.worker_employee_code,
+        r.worker_first_name, r.worker_last_name, r.receipt_filename,
+        r.category_label_en
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+// =============== RENDER ===============
+function renderKpis() {
+  const k = state.kpis || {};
+  const total = k.total_unassigned ?? state.receipts.length;
+  document.getElementById('kpiUnassigned').textContent = total.toLocaleString();
+
+  const pending = k.total_pending_usd ?? state.receipts.reduce((s, r) => s + (r.display_amount_usd ?? r.amount_submitted ?? 0), 0);
+  document.getElementById('kpiPending').textContent = fmtUSD(pending);
+
+  const oldest = k.oldest_age_days ?? Math.max(0, ...state.receipts.map(r => r.age_days || 0));
+  const oldestEl = document.getElementById('kpiOldest');
+  oldestEl.textContent = oldest + 'd';
+  oldestEl.className = 'kpi-value ' + (oldest > 7 ? 'warning' : '');
+
+  const noImg = k.no_image_count ?? state.receipts.filter(r => r.no_image).length;
+  const lowConf = k.low_confidence_count ?? state.receipts.filter(r => r.ocr_low_confidence).length;
+  const warn = noImg + lowConf;
+  const warnEl = document.getElementById('kpiWarnings');
+  warnEl.textContent = warn.toLocaleString();
+  warnEl.className = 'kpi-value ' + (warn > 0 ? 'warning' : '');
+  document.getElementById('kpiWarningsDetail').textContent = `${noImg} no image · ${lowConf} low OCR`;
+}
+
+function categoryBadgeClass(code) {
+  const c = (code || '').toLowerCase();
+  if (c.includes('inbound')) return 'badge-cat-inbound';
+  if (c.includes('outbound')) return 'badge-cat-outbound';
+  if (c.includes('travel')) return 'badge-cat-travel';
+  if (c.includes('training')) return 'badge-cat-training';
+  return 'badge-cat-other';
+}
+
+function renderList() {
+  const root = document.getElementById('receiptList');
+  if (!state.filteredReceipts.length) {
+    if (!state.receipts.length) {
+      root.innerHTML = `<div class="empty-state">
+        <div class="empty-state-title">No unassigned receipts</div>
+        <div class="empty-state-body">All receipts have been triaged. Great work.</div>
+      </div>`;
+    } else {
+      root.innerHTML = `<div class="empty-state">
+        <div class="empty-state-title">No receipts match your filters</div>
+        <div class="empty-state-body">Try adjusting the filters or search query.</div>
+      </div>`;
+    }
+    return;
+  }
+
+  const rows = state.filteredReceipts.map(r => {
+    const isSelected = state.selectedIds.has(r.submission_id);
+    const amount = r.display_amount_usd ?? r.amount_submitted;
+    const currencyNote = (r.original_currency && r.original_currency !== 'USD')
+      ? `<div class="sub">${escapeHtml(r.original_currency)} ${(r.original_amount ?? r.amount_submitted ?? 0).toFixed(2)}</div>`
+      : '';
+    const vendor = r.ocr_vendor_name || r.business_purpose || r.receipt_filename || '—';
+    const workerLine = r.worker_id
+      ? `<span style="color:var(--text);">${escapeHtml(r.worker_employee_code || '')} ${escapeHtml([r.worker_last_name, r.worker_first_name].filter(Boolean).join(', '))}</span>`
+      : `<span style="color:var(--text-faint);">No worker</span>`;
+    const lowOcr = r.ocr_low_confidence
+      ? `<span class="badge badge-warn" title="OCR confidence ${r.ocr_confidence != null ? (r.ocr_confidence*100).toFixed(0) + '%' : 'low'}">⚠ Low OCR</span>` : '';
+    const noImg = r.no_image
+      ? `<span class="badge badge-noimg" title="No image uploaded">🖼 No image</span>` : '';
+    const statusBadge = `<span class="badge badge-status ${escapeHtml(r.status)}">${escapeHtml(r.status)}</span>`;
+    const ageBadge = `<span class="badge badge-age ${r.is_stale ? 'stale' : ''}">${r.age_days || 0}d</span>`;
+    const catBadge = `<span class="badge ${categoryBadgeClass(r.category_code)}">${escapeHtml(r.category_label_en || r.category_code)}</span>`;
+    const thumb = renderThumb(r);
+
+    return `
+      <div class="receipt-row ${r.is_stale ? 'stale' : ''} ${isSelected ? 'selected' : ''}" data-id="${escapeHtml(r.submission_id)}">
+        <div class="col-check">
+          <input type="checkbox" class="row-check" data-id="${escapeHtml(r.submission_id)}" ${isSelected ? 'checked' : ''}
+            aria-label="Select receipt from ${escapeHtml(vendor)}" />
+        </div>
+        <div class="col-thumb ${r.no_image ? 'placeholder' : ''}" data-id="${escapeHtml(r.submission_id)}" data-path="${escapeHtml(r.receipt_storage_path || '')}">
+          ${thumb}
+        </div>
+        <div class="col-amount">
+          ${fmtUSD(amount)}
+          ${currencyNote}
+        </div>
+        <div class="col-vendor">
+          <div class="vendor-name" title="${escapeHtml(vendor)}">${escapeHtml(vendor.slice(0, 60))}</div>
+          <div class="vendor-meta">
+            ${statusBadge}
+            ${workerLine}
+            ${lowOcr}
+            ${noImg}
+          </div>
+        </div>
+        <div class="col-date">${fmtDate(r.effective_expense_date || r.ocr_expense_date)}</div>
+        <div class="col-cat">
+          ${catBadge}
+          ${ageBadge}
+        </div>
+        <div class="col-actions">
+          <button class="btn-primary btn-assign" data-id="${escapeHtml(r.submission_id)}" style="height:30px; padding:0 14px;">Assign →</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = rows;
+  attachRowHandlers();
+  observeThumbs();
+}
+
+function renderThumb(r) {
+  if (r.no_image || !r.receipt_storage_path) {
+    return `<span style="font-size:18px;">🖼</span>`;
+  }
+  const cached = state.signedUrlCache.get(r.submission_id);
+  if (cached && cached.expiresAt > Date.now()) {
+    return `<img src="${escapeHtml(cached.url)}" alt="Receipt — ${escapeHtml(r.ocr_vendor_name || r.receipt_filename || 'receipt')}" />`;
+  }
+  return `<span class="skeleton" style="display:block; width:100%; height:100%;"></span>`;
+}
+
+function attachRowHandlers() {
+  document.querySelectorAll('.row-check').forEach(cb => {
+    cb.onchange = (e) => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) state.selectedIds.add(id);
+      else state.selectedIds.delete(id);
+      updateSelectionUi();
+    };
+  });
+  document.querySelectorAll('.btn-assign').forEach(btn => {
+    btn.onclick = () => openPanel(btn.dataset.id);
+  });
+  document.querySelectorAll('.col-thumb img').forEach(img => {
+    img.onclick = () => openLightbox(img.src);
+  });
+}
+
+function updateSelectionUi() {
+  const n = state.selectedIds.size;
+  document.getElementById('bulkCount').textContent = n;
+  document.getElementById('bulkAssignBtn').disabled = n === 0;
+  // Update select-all state
+  const totalVisible = state.filteredReceipts.length;
+  const visibleSelected = state.filteredReceipts.filter(r => state.selectedIds.has(r.submission_id)).length;
+  const cb = document.getElementById('selectAll');
+  cb.checked = totalVisible > 0 && visibleSelected === totalVisible;
+  cb.indeterminate = visibleSelected > 0 && visibleSelected < totalVisible;
+  // Row visual state
+  document.querySelectorAll('.receipt-row').forEach(row => {
+    if (state.selectedIds.has(row.dataset.id)) row.classList.add('selected');
+    else row.classList.remove('selected');
+  });
+}
+
+// =============== LAZY SIGNED URLS ===============
+let thumbObserver = null;
+function observeThumbs() {
+  if (thumbObserver) thumbObserver.disconnect();
+  thumbObserver = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        const el = e.target;
+        const id = el.dataset.id;
+        const path = el.dataset.path;
+        if (!path) continue;
+        const cached = state.signedUrlCache.get(id);
+        if (cached && cached.expiresAt > Date.now()) continue;
+        fetchSignedUrl(id, path).then(url => {
+          if (url) {
+            const receipt = state.filteredReceipts.find(r => r.submission_id === id);
+            el.innerHTML = `<img src="${escapeHtml(url)}" alt="Receipt — ${escapeHtml(receipt?.ocr_vendor_name || receipt?.receipt_filename || 'receipt')}" />`;
+            el.querySelector('img').onclick = () => openLightbox(url);
+          } else {
+            el.innerHTML = `<span style="color:var(--error); font-size:11px;">⚠</span>`;
+          }
+        });
+        thumbObserver.unobserve(el);
+      }
+    }
+  }, { rootMargin: '100px' });
+  document.querySelectorAll('.col-thumb[data-path]').forEach(el => {
+    if (el.dataset.path) thumbObserver.observe(el);
+  });
+}
+
+async function fetchSignedUrl(submissionId, path) {
+  try {
+    const { data, error } = await sb.storage.from('expense-receipts').createSignedUrl(path, 3600);
+    if (error || !data?.signedUrl) return null;
+    state.signedUrlCache.set(submissionId, {
+      url: data.signedUrl,
+      expiresAt: Date.now() + 55 * 60 * 1000,  // refresh a bit before expiry
+    });
+    return data.signedUrl;
+  } catch (e) {
+    console.warn('Signed URL failed', e);
+    return null;
+  }
+}
+
+// =============== LIGHTBOX ===============
+window.closeLightbox = () => {
+  document.getElementById('lightbox').classList.remove('open');
+};
+function openLightbox(url) {
+  document.getElementById('lightboxImg').src = url;
+  document.getElementById('lightbox').classList.add('open');
+}
+
+// =============== ASSIGNMENT PANEL ===============
+async function openPanel(submissionId) {
+  const receipt = state.receipts.find(r => r.submission_id === submissionId);
+  if (!receipt) return;
+
+  // Reset panel state
+  Object.assign(state.panel, {
+    open: true,
+    isBulk: false,
+    submissionId,
+    receipt,
+    workerQuery: '',
+    workerResults: [],
+    workerLoading: false,
+    selectedWorker: null,
+    payPeriods: [],
+    payPeriodsLoading: false,
+    selectedPayPeriodId: null,
+    selectedCategoryCode: receipt.category_code || null,
+    amountApproved: receipt.display_amount_usd ?? receipt.amount_submitted ?? '',
+    note: '',
+    isSubmitting: false,
+    submitError: null,
+    submitWarning: null,
+  });
+
+  document.getElementById('assignPanel').classList.add('open');
+  document.getElementById('assignPanel').setAttribute('aria-hidden', 'false');
+  document.getElementById('panelBackdrop').classList.add('open');
+
+  renderPanelBody();
+
+  // Ensure signed URL is available
+  if (receipt.receipt_storage_path && !receipt.no_image) {
+    const cached = state.signedUrlCache.get(receipt.submission_id);
+    if (!cached || cached.expiresAt < Date.now()) {
+      await fetchSignedUrl(receipt.submission_id, receipt.receipt_storage_path);
+      renderPanelBody();
+    }
+  }
+
+  // Pre-select worker if receipt already has one (rare, but possible)
+  if (receipt.worker_id && receipt.worker_employee_code) {
+    selectWorker({
+      worker_id: receipt.worker_id,
+      employee_code: receipt.worker_employee_code,
+      first_name: receipt.worker_first_name,
+      last_name: receipt.worker_last_name,
+      worker_status: receipt.worker_status,
+      farm_name: null,
+      has_farm: !!receipt.worker_current_farm_id,
+      is_active: (receipt.worker_status || '').toLowerCase() === 'active',
+    });
+  }
+}
+
+function closePanel() {
+  state.panel.open = false;
+  document.getElementById('assignPanel').classList.remove('open');
+  document.getElementById('assignPanel').setAttribute('aria-hidden', 'true');
+  document.getElementById('panelBackdrop').classList.remove('open');
+}
+
+function renderPanelBody() {
+  const p = state.panel;
+  const r = p.receipt;
+  if (!r) return;
+  const cached = state.signedUrlCache.get(r.submission_id);
+  const imgHtml = (r.no_image || !r.receipt_storage_path)
+    ? `<div class="preview-noimage">📄 No receipt image — manual entry</div>`
+    : (cached
+        ? `<img class="preview-image" src="${escapeHtml(cached.url)}" alt="Receipt — ${escapeHtml(r.ocr_vendor_name || 'receipt')}" onclick="openLightboxFromPanel('${escapeHtml(cached.url)}')" />`
+        : `<div class="skeleton" style="width:100%; height:180px;"></div>`);
+
+  const ocrConfPct = r.ocr_confidence != null ? Math.round(r.ocr_confidence * 100) + '%' : '—';
+  const ocrAmountUSD = r.display_amount_usd ?? r.amount_submitted;
+  const ocrLine = (r.original_currency && r.original_currency !== 'USD')
+    ? `${fmtUSD(ocrAmountUSD)} (${escapeHtml(r.original_currency)} ${(r.original_amount ?? 0).toFixed(2)})`
+    : fmtUSD(ocrAmountUSD);
+
+  // Category options
+  const catOptions = state.categories.map(c =>
+    `<option value="${escapeHtml(c.category_code)}" ${c.category_code === p.selectedCategoryCode ? 'selected' : ''}>${escapeHtml(c.label_en || c.category_code)}</option>`
+  ).join('');
+
+  // Worker section
+  const workerSection = p.selectedWorker
+    ? `<div class="chip">
+        ${escapeHtml(p.selectedWorker.employee_code || '')} ${escapeHtml([p.selectedWorker.last_name, p.selectedWorker.first_name].filter(Boolean).join(', '))}
+        <button class="chip-x" id="workerClear" aria-label="Clear worker">×</button>
+      </div>
+      ${p.selectedWorker.farm_name ? `<div class="field-help">Farm: ${escapeHtml(p.selectedWorker.farm_name)}</div>` : ''}
+      ${!p.selectedWorker.has_farm ? `<div class="field-error">⚠ Worker has no current farm assignment. Cannot assign receipt.</div>` : ''}
+      ${p.selectedWorker.is_active === false ? `<div class="field-warn">⚠ Worker status: ${escapeHtml(p.selectedWorker.worker_status || 'inactive')}</div>` : ''}`
+    : `<div class="combo">
+        <input type="search" id="workerSearch" placeholder="H-code or name (e.g. H01234 or Pérez)"
+          role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="${p.workerResults.length > 0}" />
+        <div class="combo-results ${p.workerResults.length > 0 || p.workerLoading ? 'open' : ''}" id="workerResults" role="listbox">
+          ${p.workerLoading
+            ? `<div class="combo-empty"><span class="spinner"></span> Searching…</div>`
+            : p.workerResults.length === 0 && p.workerQuery.length >= 2
+              ? `<div class="combo-empty">No workers found</div>`
+              : p.workerResults.map((w, idx) => {
+                const cls = w.has_farm === false ? 'no-farm' : (w.is_active === false ? 'inactive' : '');
+                const prefix = w.has_farm === false ? '🚫 ' : (w.is_active === false ? '⚠ ' : '');
+                return `<div class="combo-option ${cls}" data-idx="${idx}" role="option">
+                  <div class="row1">${prefix}${escapeHtml(w.employee_code || '')} ${escapeHtml([w.last_name, w.first_name].filter(Boolean).join(', '))}</div>
+                  <div class="row2">${escapeHtml(w.farm_name || 'No farm')} · ${escapeHtml(w.worker_status || '')}</div>
+                </div>`;
+              }).join('')
+          }
+        </div>
+      </div>`;
+
+  // Pay period options
+  const ppHtml = (() => {
+    if (!p.selectedWorker) return `<select disabled><option>Select a worker first</option></select>`;
+    if (p.payPeriodsLoading) return `<div><span class="spinner"></span> Loading pay periods…</div>`;
+    if (p.payPeriods.length === 0) {
+      return `<select disabled><option>No open pay periods</option></select>
+        <div class="field-error">No open pay periods for this worker's farm. Contact payroll admin.</div>`;
+    }
+    return `<select id="payPeriodSelect">
+      <option value="">— Select pay period —</option>
+      ${p.payPeriods.map(pp => `<option value="${escapeHtml(pp.pay_period_id)}" ${pp.pay_period_id === p.selectedPayPeriodId ? 'selected' : ''}>
+        WE ${fmtDate(pp.week_ending)} (${escapeHtml(pp.status || 'Open')})${pp.farm_name ? ' — ' + escapeHtml(pp.farm_name) : ''}
+      </option>`).join('')}
+    </select>`;
+  })();
+
+  // Amount warning
+  const ocrEstimate = r.ocr_amount_usd_estimated;
+  const amountVal = Number(p.amountApproved) || 0;
+  const amountEdited = ocrAmountUSD != null && Math.abs(amountVal - ocrAmountUSD) > 0.01;
+  const amountHighWarn = ocrEstimate && amountVal > ocrEstimate * 1.5;
+
+  document.getElementById('panelBody').innerHTML = `
+    ${p.submitError ? `<div class="panel-error" role="alert">${escapeHtml(p.submitError)}</div>` : ''}
+    ${p.submitWarning ? `<div class="panel-warn">${escapeHtml(p.submitWarning)}</div>` : ''}
+
+    <div>
+      ${imgHtml}
+      <dl class="preview-meta" style="margin-top:10px;">
+        <dt>Vendor</dt><dd>${escapeHtml(r.ocr_vendor_name || r.business_purpose || '—')}</dd>
+        <dt>Date</dt><dd>${fmtDate(r.effective_expense_date || r.ocr_expense_date)}</dd>
+        <dt>Amount</dt><dd>${ocrLine}</dd>
+        <dt>OCR conf.</dt><dd>${ocrConfPct}${r.ocr_low_confidence ? ' <span class="badge badge-warn">Low</span>' : ''}</dd>
+        <dt>Age</dt><dd>${r.age_days || 0} days ${r.is_stale ? '<span class="badge badge-age stale">Stale</span>' : ''}</dd>
+      </dl>
+    </div>
+
+    <div class="field">
+      <label class="field-label">Worker <span class="req">*</span></label>
+      ${workerSection}
+    </div>
+
+    <div class="field">
+      <label class="field-label">Pay Period <span class="req">*</span></label>
+      ${ppHtml}
+    </div>
+
+    <div class="field">
+      <label class="field-label">Category <span class="req">*</span></label>
+      <select id="categorySelect">
+        <option value="">— Select category —</option>
+        ${catOptions}
+      </select>
+    </div>
+
+    <div class="field">
+      <label class="field-label">Approved Amount (USD) <span class="req">*</span></label>
+      <input type="number" id="amountInput" step="0.01" min="0.01" value="${p.amountApproved}" />
+      ${amountEdited && ocrAmountUSD != null ? `<div class="field-help">Edited from OCR value of ${fmtUSD(ocrAmountUSD)}</div>` : ''}
+      ${amountHighWarn ? `<div class="field-warn">⚠ Amount is more than 50% above OCR estimate — please verify</div>` : ''}
+    </div>
+
+    <div class="field">
+      <label class="field-label">Note (optional)</label>
+      <textarea id="noteInput" rows="2" placeholder="Optional note about this assignment...">${escapeHtml(p.note)}</textarea>
+    </div>
+  `;
+
+  attachPanelHandlers();
+  updatePanelSubmitButton();
+}
+
+function attachPanelHandlers() {
+  const p = state.panel;
+  const workerInput = document.getElementById('workerSearch');
+  if (workerInput) {
+    workerInput.value = p.workerQuery;
+    workerInput.oninput = (e) => {
+      p.workerQuery = e.target.value;
+      debouncedSearchWorkers();
+    };
+    workerInput.onkeydown = (e) => {
+      if (e.key === 'Escape') {
+        p.workerResults = [];
+        renderPanelBody();
+      }
+    };
+    // Focus if no worker selected and user just opened
+    if (!p.selectedWorker && document.activeElement !== workerInput) {
+      // don't auto-focus to avoid jank
+    }
+  }
+  const workerClear = document.getElementById('workerClear');
+  if (workerClear) {
+    workerClear.onclick = () => {
+      p.selectedWorker = null;
+      p.payPeriods = [];
+      p.selectedPayPeriodId = null;
+      renderPanelBody();
+    };
+  }
+  document.querySelectorAll('#workerResults .combo-option').forEach(opt => {
+    opt.onclick = () => {
+      const idx = parseInt(opt.dataset.idx, 10);
+      const w = p.workerResults[idx];
+      if (w) selectWorker(w);
+    };
+  });
+  const pp = document.getElementById('payPeriodSelect');
+  if (pp) pp.onchange = (e) => { p.selectedPayPeriodId = e.target.value || null; updatePanelSubmitButton(); };
+  const cat = document.getElementById('categorySelect');
+  if (cat) cat.onchange = (e) => { p.selectedCategoryCode = e.target.value || null; updatePanelSubmitButton(); };
+  const amt = document.getElementById('amountInput');
+  if (amt) amt.oninput = (e) => { p.amountApproved = e.target.value; updatePanelSubmitButton(); };
+  const note = document.getElementById('noteInput');
+  if (note) note.oninput = (e) => { p.note = e.target.value; };
+}
+
+function updatePanelSubmitButton() {
+  const p = state.panel;
+  const ok = p.selectedWorker && p.selectedWorker.has_farm !== false
+    && p.selectedPayPeriodId
+    && p.selectedCategoryCode
+    && Number(p.amountApproved) > 0
+    && !p.isSubmitting;
+  document.getElementById('panelSubmit').disabled = !ok;
+}
+
+window.openLightboxFromPanel = openLightbox;
+
+// =============== WORKER SEARCH ===============
+let searchTimer = null;
+function debouncedSearchWorkers() {
+  clearTimeout(searchTimer);
+  const q = state.panel.workerQuery.trim();
+  if (q.length < 2) {
+    state.panel.workerResults = [];
+    state.panel.workerLoading = false;
+    renderPanelBody();
+    return;
+  }
+  state.panel.workerLoading = true;
+  renderPanelBody();
+  searchTimer = setTimeout(() => searchWorkers(q, 'panel'), 300);
+}
+
+async function searchWorkers(query, target = 'panel') {
+  try {
+    const { data, error } = await sb.rpc('search_h2a_workers', { p_query: query, p_limit: 20 });
+    if (error) throw error;
+    const results = (data || []).map(w => ({
+      worker_id: w.worker_id,
+      employee_code: w.employee_code,
+      first_name: w.first_name,
+      last_name: w.last_name,
+      worker_status: w.worker_status || w.status,
+      farm_name: w.farm_name,
+      has_farm: w.has_farm !== false && !!(w.farm_id || w.farm_name),
+      is_active: (w.worker_status || w.status || '').toLowerCase() === 'active',
+    }));
+    if (target === 'panel') {
+      // Only apply if query still matches
+      if (state.panel.workerQuery.trim() === query) {
+        state.panel.workerResults = results;
+        state.panel.workerLoading = false;
+        renderPanelBody();
+      }
+    } else if (target === 'bulk') {
+      if (state.bulk.workerQuery.trim() === query) {
+        state.bulk.workerResults = results;
+        state.bulk.workerLoading = false;
+        renderBulkBody();
+      }
+    }
+  } catch (e) {
+    console.error('Worker search failed', e);
+    if (target === 'panel') { state.panel.workerLoading = false; state.panel.workerResults = []; renderPanelBody(); }
+    else { state.bulk.workerLoading = false; state.bulk.workerResults = []; renderBulkBody(); }
+  }
+}
+
+async function selectWorker(w, target = 'panel') {
+  if (target === 'panel') {
+    state.panel.selectedWorker = w;
+    state.panel.workerResults = [];
+    state.panel.workerQuery = '';
+    state.panel.payPeriodsLoading = true;
+    renderPanelBody();
+  } else {
+    state.bulk.selectedWorker = w;
+    state.bulk.workerResults = [];
+    state.bulk.workerQuery = '';
+    state.bulk.payPeriodsLoading = true;
+    renderBulkBody();
+  }
+  if (w.has_farm === false) {
+    if (target === 'panel') { state.panel.payPeriodsLoading = false; renderPanelBody(); }
+    else { state.bulk.payPeriodsLoading = false; renderBulkBody(); }
+    return;
+  }
+  try {
+    const { data, error } = await sb.rpc('get_open_pay_periods_for_worker', { p_worker_id: w.worker_id });
+    if (error) throw error;
+    const periods = (data || []).map(pp => ({
+      pay_period_id: pp.pay_period_id,
+      week_ending: pp.week_ending,
+      status: pp.status,
+      farm_name: pp.farm_name,
+    }));
+    if (target === 'panel') {
+      state.panel.payPeriods = periods;
+      state.panel.payPeriodsLoading = false;
+      // Auto-select if exactly one
+      if (periods.length === 1) state.panel.selectedPayPeriodId = periods[0].pay_period_id;
+      renderPanelBody();
+    } else {
+      state.bulk.payPeriods = periods;
+      state.bulk.payPeriodsLoading = false;
+      if (periods.length === 1) state.bulk.selectedPayPeriodId = periods[0].pay_period_id;
+      renderBulkBody();
+    }
+  } catch (e) {
+    console.error('Pay period load failed', e);
+    if (target === 'panel') { state.panel.payPeriodsLoading = false; renderPanelBody(); }
+    else { state.bulk.payPeriodsLoading = false; renderBulkBody(); }
+  }
+}
+
+// =============== ASSIGN SUBMIT ===============
+async function submitAssign() {
+  const p = state.panel;
+  if (!p.selectedWorker || !p.selectedPayPeriodId || !p.selectedCategoryCode) return;
+  p.isSubmitting = true;
+  p.submitError = null;
+  p.submitWarning = null;
+  document.getElementById('panelSubmit').innerHTML = '<span class="spinner"></span> Assigning…';
+  document.getElementById('panelSubmit').disabled = true;
+
+  try {
+    const { data, error } = await sb.rpc('receipt_assign', {
+      p_submission_id: p.submissionId,
+      p_worker_id: p.selectedWorker.worker_id,
+      p_pay_period_id: p.selectedPayPeriodId,
+      p_category_code: p.selectedCategoryCode,
+      p_amount_approved: Number(p.amountApproved),
+      p_notes: p.note || null,
+    });
+    if (error) throw error;
+    const result = Array.isArray(data) ? data[0] : data;
+    if (result && result.ok === false) {
+      p.submitError = result.message || result.error || 'Assignment failed';
+      p.isSubmitting = false;
+      renderPanelBody();
+      return;
+    }
+    // Success
+    showToast({
+      type: 'success',
+      title: 'Receipt assigned',
+      body: `to ${p.selectedWorker.employee_code} ${p.selectedWorker.last_name || ''}, ${p.selectedWorker.first_name || ''}`,
+    });
+    if (result && result.warning) {
+      showToast({ type: 'warning', title: 'Assignment warning', body: result.warning });
+    }
+    // Optimistic remove
+    removeReceiptFromList(p.submissionId);
+    closePanel();
+    await loadKpis();
+  } catch (e) {
+    console.error(e);
+    p.submitError = e.message || 'Network error. Try again.';
+    p.isSubmitting = false;
+    document.getElementById('panelSubmit').textContent = 'Assign ✓';
+    document.getElementById('panelSubmit').disabled = false;
+    renderPanelBody();
+  }
+}
+
+function removeReceiptFromList(id) {
+  state.receipts = state.receipts.filter(r => r.submission_id !== id);
+  state.selectedIds.delete(id);
+  applyClientFilters();
+  // Visually flash + remove
+  const row = document.querySelector(`.receipt-row[data-id="${id}"]`);
+  if (row) {
+    row.classList.add('flash-removed');
+    setTimeout(() => renderList(), 600);
+  } else {
+    renderList();
+  }
+  updateSelectionUi();
+}
+
+// =============== BULK ASSIGN ===============
+function openBulkModal() {
+  if (state.selectedIds.size === 0) return;
+  Object.assign(state.bulk, {
+    open: true,
+    selectedWorker: null,
+    workerQuery: '',
+    workerResults: [],
+    workerLoading: false,
+    payPeriods: [],
+    payPeriodsLoading: false,
+    selectedPayPeriodId: null,
+    note: '',
+    progress: { total: 0, done: 0, failed: 0, errors: [] },
+    isSubmitting: false,
+  });
+  document.getElementById('bulkModal').classList.add('open');
+  document.getElementById('bulkModal').setAttribute('aria-hidden', 'false');
+  renderBulkBody();
+}
+
+function closeBulkModal() {
+  state.bulk.open = false;
+  document.getElementById('bulkModal').classList.remove('open');
+  document.getElementById('bulkModal').setAttribute('aria-hidden', 'true');
+}
+
+function renderBulkBody() {
+  const b = state.bulk;
+  const count = state.selectedIds.size;
+
+  const workerSection = b.selectedWorker
+    ? `<div class="chip">
+        ${escapeHtml(b.selectedWorker.employee_code || '')} ${escapeHtml([b.selectedWorker.last_name, b.selectedWorker.first_name].filter(Boolean).join(', '))}
+        <button class="chip-x" id="bulkWorkerClear" aria-label="Clear worker">×</button>
+      </div>
+      ${b.selectedWorker.farm_name ? `<div class="field-help">Farm: ${escapeHtml(b.selectedWorker.farm_name)}</div>` : ''}
+      ${b.selectedWorker.has_farm === false ? `<div class="field-error">⚠ Worker has no current farm assignment.</div>` : ''}`
+    : `<div class="combo">
+        <input type="search" id="bulkWorkerSearch" placeholder="H-code or name..." />
+        <div class="combo-results ${b.workerResults.length > 0 || b.workerLoading ? 'open' : ''}">
+          ${b.workerLoading
+            ? `<div class="combo-empty"><span class="spinner"></span> Searching…</div>`
+            : b.workerResults.length === 0 && b.workerQuery.length >= 2
+              ? `<div class="combo-empty">No workers found</div>`
+              : b.workerResults.map((w, idx) => `<div class="combo-option ${w.has_farm === false ? 'no-farm' : (w.is_active === false ? 'inactive' : '')}" data-idx="${idx}">
+                <div class="row1">${escapeHtml(w.employee_code || '')} ${escapeHtml([w.last_name, w.first_name].filter(Boolean).join(', '))}</div>
+                <div class="row2">${escapeHtml(w.farm_name || 'No farm')} · ${escapeHtml(w.worker_status || '')}</div>
+              </div>`).join('')
+          }
+        </div>
+      </div>`;
+
+  const ppHtml = (() => {
+    if (!b.selectedWorker) return `<select disabled><option>Select a worker first</option></select>`;
+    if (b.payPeriodsLoading) return `<div><span class="spinner"></span> Loading…</div>`;
+    if (b.payPeriods.length === 0) return `<select disabled><option>No open pay periods</option></select>`;
+    return `<select id="bulkPayPeriodSelect">
+      <option value="">— Select pay period —</option>
+      ${b.payPeriods.map(pp => `<option value="${escapeHtml(pp.pay_period_id)}" ${pp.pay_period_id === b.selectedPayPeriodId ? 'selected' : ''}>
+        WE ${fmtDate(pp.week_ending)} (${escapeHtml(pp.status || 'Open')})${pp.farm_name ? ' — ' + escapeHtml(pp.farm_name) : ''}
+      </option>`).join('')}
+    </select>`;
+  })();
+
+  const progressHtml = b.isSubmitting || b.progress.done > 0
+    ? `<div style="background:var(--surface-alt); padding:10px 12px; border-radius:var(--radius);">
+        <div style="font-weight:600; margin-bottom:6px;">Progress: ${b.progress.done + b.progress.failed} / ${b.progress.total}</div>
+        <div style="background:#fff; height:8px; border-radius:4px; overflow:hidden;">
+          <div style="width:${b.progress.total ? ((b.progress.done + b.progress.failed) / b.progress.total) * 100 : 0}%; height:100%; background:var(--primary);"></div>
+        </div>
+        ${b.progress.failed > 0 ? `<div class="field-error" style="margin-top:6px;">${b.progress.failed} failed</div>` : ''}
+        ${b.progress.errors.length > 0 ? `<details style="margin-top:6px;"><summary style="cursor:pointer; font-size:12px;">View errors</summary>
+          <ul style="margin-top:4px; padding-left:20px; font-size:12px; color:var(--error);">
+            ${b.progress.errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
+          </ul>
+        </details>` : ''}
+      </div>`
+    : '';
+
+  document.getElementById('bulkBody').innerHTML = `
+    <div style="background:var(--surface-alt); padding:10px 12px; border-radius:var(--radius); font-size:13px;">
+      Assigning <strong>${count}</strong> receipt${count === 1 ? '' : 's'}. Each receipt keeps its own category and amount.
+    </div>
+
+    <div class="field">
+      <label class="field-label">Worker <span class="req">*</span></label>
+      ${workerSection}
+    </div>
+
+    <div class="field">
+      <label class="field-label">Pay Period <span class="req">*</span></label>
+      ${ppHtml}
+    </div>
+
+    <div class="field">
+      <label class="field-label">Note (applied to all)</label>
+      <textarea id="bulkNoteInput" rows="2" placeholder="Optional note for the entire batch...">${escapeHtml(b.note)}</textarea>
+    </div>
+
+    ${progressHtml}
+  `;
+
+  attachBulkHandlers();
+  const ok = b.selectedWorker && b.selectedWorker.has_farm !== false && b.selectedPayPeriodId && !b.isSubmitting;
+  document.getElementById('bulkSubmit').disabled = !ok;
+  document.getElementById('bulkSubmit').innerHTML = b.isSubmitting ? '<span class="spinner"></span> Assigning…' : `Assign All (${count}) →`;
+}
+
+function attachBulkHandlers() {
+  const b = state.bulk;
+  const wi = document.getElementById('bulkWorkerSearch');
+  if (wi) {
+    wi.value = b.workerQuery;
+    wi.oninput = (e) => {
+      b.workerQuery = e.target.value;
+      clearTimeout(searchTimer);
+      const q = b.workerQuery.trim();
+      if (q.length < 2) { b.workerResults = []; b.workerLoading = false; renderBulkBody(); return; }
+      b.workerLoading = true;
+      renderBulkBody();
+      searchTimer = setTimeout(() => searchWorkers(q, 'bulk'), 300);
+    };
+  }
+  const wc = document.getElementById('bulkWorkerClear');
+  if (wc) wc.onclick = () => {
+    b.selectedWorker = null;
+    b.payPeriods = [];
+    b.selectedPayPeriodId = null;
+    renderBulkBody();
+  };
+  document.querySelectorAll('#bulkBody .combo-option').forEach(opt => {
+    opt.onclick = () => {
+      const idx = parseInt(opt.dataset.idx, 10);
+      const w = b.workerResults[idx];
+      if (w) selectWorker(w, 'bulk');
+    };
+  });
+  const pp = document.getElementById('bulkPayPeriodSelect');
+  if (pp) pp.onchange = (e) => { b.selectedPayPeriodId = e.target.value || null; renderBulkBody(); };
+  const note = document.getElementById('bulkNoteInput');
+  if (note) note.oninput = (e) => { b.note = e.target.value; };
+}
+
+async function submitBulkAssign() {
+  const b = state.bulk;
+  if (!b.selectedWorker || !b.selectedPayPeriodId) return;
+  const ids = Array.from(state.selectedIds);
+  b.progress = { total: ids.length, done: 0, failed: 0, errors: [] };
+  b.isSubmitting = true;
+  renderBulkBody();
+
+  for (const id of ids) {
+    const receipt = state.receipts.find(r => r.submission_id === id);
+    if (!receipt) continue;
+    const amount = receipt.display_amount_usd ?? receipt.amount_submitted;
+    const categoryCode = receipt.category_code;
+    try {
+      const { data, error } = await sb.rpc('receipt_assign', {
+        p_submission_id: id,
+        p_worker_id: b.selectedWorker.worker_id,
+        p_pay_period_id: b.selectedPayPeriodId,
+        p_category_code: categoryCode,
+        p_amount_approved: amount,
+        p_notes: b.note || null,
+      });
+      if (error) throw error;
+      const result = Array.isArray(data) ? data[0] : data;
+      if (result && result.ok === false) {
+        b.progress.failed++;
+        b.progress.errors.push(`${receipt.ocr_vendor_name || id.slice(0,8)}: ${result.message || result.error || 'failed'}`);
+      } else {
+        b.progress.done++;
+        removeReceiptFromList(id);
+      }
+    } catch (e) {
+      b.progress.failed++;
+      b.progress.errors.push(`${receipt.ocr_vendor_name || id.slice(0,8)}: ${e.message || 'error'}`);
+    }
+    renderBulkBody();
+  }
+
+  b.isSubmitting = false;
+  renderBulkBody();
+  showToast({
+    type: b.progress.failed > 0 ? 'warning' : 'success',
+    title: `Bulk assign complete`,
+    body: `${b.progress.done} of ${b.progress.total} assigned${b.progress.failed > 0 ? `, ${b.progress.failed} failed` : ''}`,
+  });
+  await loadKpis();
+  if (b.progress.failed === 0) {
+    setTimeout(closeBulkModal, 1200);
+  }
+}
+
+// =============== TOASTS ===============
+function showToast({ type = 'success', title, body }) {
+  const container = document.getElementById('toastContainer');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  el.innerHTML = `<div class="toast-title">${escapeHtml(title)}</div><div class="toast-body">${escapeHtml(body || '')}</div>`;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity .3s';
+    setTimeout(() => el.remove(), 300);
+  }, 4500);
+}
+
+// =============== FILTER UI ===============
+function syncFilterUiFromState() {
+  document.querySelectorAll('.f-status').forEach(cb => {
+    cb.checked = state.filters.statusList.includes(cb.value);
+  });
+  document.getElementById('filterCategory').value = state.filters.categoryCode || '';
+  document.getElementById('filterAmountMin').value = state.filters.amountMin ?? '';
+  document.getElementById('filterAmountMax').value = state.filters.amountMax ?? '';
+  document.getElementById('filterStale').checked = !!state.filters.staleOnly;
+  document.getElementById('filterNoImage').checked = !!state.filters.noImageOnly;
+  document.getElementById('filterLowConf').checked = !!state.filters.lowConfidenceOnly;
+  updateFilterBadge();
+}
+
+function readFilterUi() {
+  state.filters.statusList = Array.from(document.querySelectorAll('.f-status'))
+    .filter(cb => cb.checked).map(cb => cb.value);
+  state.filters.categoryCode = document.getElementById('filterCategory').value || null;
+  const min = document.getElementById('filterAmountMin').value;
+  const max = document.getElementById('filterAmountMax').value;
+  state.filters.amountMin = min !== '' ? Number(min) : null;
+  state.filters.amountMax = max !== '' ? Number(max) : null;
+  state.filters.staleOnly = document.getElementById('filterStale').checked;
+  state.filters.noImageOnly = document.getElementById('filterNoImage').checked;
+  state.filters.lowConfidenceOnly = document.getElementById('filterLowConf').checked;
+  saveFilters();
+}
+
+function updateFilterBadge() {
+  const f = state.filters;
+  let n = 0;
+  if (f.statusList.length < 3) n++;
+  if (f.categoryCode) n++;
+  if (f.amountMin != null) n++;
+  if (f.amountMax != null) n++;
+  if (f.staleOnly) n++;
+  if (f.noImageOnly) n++;
+  if (f.lowConfidenceOnly) n++;
+  const badge = document.getElementById('filterBadge');
+  if (n > 0) { badge.textContent = n; badge.style.display = 'inline-block'; }
+  else badge.style.display = 'none';
+}
+
+// =============== WIRE EVENTS ===============
+document.getElementById('refreshBtn').onclick = loadAll;
+document.getElementById('selectAll').onchange = (e) => {
+  if (e.target.checked) {
+    state.filteredReceipts.forEach(r => state.selectedIds.add(r.submission_id));
+  } else {
+    state.filteredReceipts.forEach(r => state.selectedIds.delete(r.submission_id));
+  }
+  renderList();
+  updateSelectionUi();
+};
+document.getElementById('bulkAssignBtn').onclick = openBulkModal;
+document.getElementById('filterToggle').onclick = () => {
+  const drawer = document.getElementById('filterDrawer');
+  const isOpen = drawer.classList.toggle('open');
+  document.getElementById('filterToggle').setAttribute('aria-expanded', String(isOpen));
+  document.getElementById('filterChevron').textContent = isOpen ? '▲' : '▼';
+};
+document.getElementById('filterApply').onclick = async () => {
+  readFilterUi();
+  updateFilterBadge();
+  await loadReceipts();
+};
+document.getElementById('filterReset').onclick = async () => {
+  state.filters = defaultFilters();
+  saveFilters();
+  syncFilterUiFromState();
+  await loadReceipts();
+};
+document.getElementById('searchInput').oninput = (e) => {
+  state.searchQuery = e.target.value;
+  applyClientFilters();
+  renderList();
+  updateSelectionUi();
+};
+document.getElementById('panelClose').onclick = closePanel;
+document.getElementById('panelCancel').onclick = closePanel;
+document.getElementById('panelBackdrop').onclick = closePanel;
+document.getElementById('panelSubmit').onclick = submitAssign;
+
+document.getElementById('bulkClose').onclick = closeBulkModal;
+document.getElementById('bulkCancel').onclick = closeBulkModal;
+document.getElementById('bulkSubmit').onclick = submitBulkAssign;
+
+// Escape closes panel/modal/lightbox
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('lightbox').classList.contains('open')) closeLightbox();
+  else if (state.panel.open) closePanel();
+  else if (state.bulk.open) closeBulkModal();
+});
+
+// Auto-refresh KPIs every 60 seconds while page is open
+setInterval(() => {
+  if (!document.hidden) loadKpis().catch(() => {});
+}, 60000);
+
+// =============== INIT ===============
+(async function init() {
+  await loadCategories();
+  syncFilterUiFromState();
+  await loadAll();
+})();
+</script>
+</body>
+</html>
