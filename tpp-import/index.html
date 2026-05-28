@@ -1,0 +1,1471 @@
+<!DOCTYPE html>
+<!--
+  eBerry Admin Dashboard — TPP Check Register Importer
+  ====================================================
+  Payroll admin view for backfilling third-party-paper (TPP) check numbers
+  from provider weekly check registers.
+
+  SECTIONS:
+    Import Panel
+      - Provider select, week ending picker, CSV drop zone, parse button
+      - Preview table with status badges + per-row Override / Flag / Select-Paycheck
+      - Gross totals bar (CSV total vs matched total vs variance)
+      - Commit section (with partial-commit checkbox + commit button + reset link)
+    Backfill History Panel
+      - Filter by provider and date range
+      - Recent commits table (expandable rows)
+
+  RPCs CALLED (all via supabase.schema('payroll').rpc()):
+    payroll.tpp_import_parse(p_provider_id, p_csv_text, p_week_ending)
+    payroll.tpp_import_preview(p_provider_id, p_week_ending)
+    payroll.tpp_import_commit(p_provider_id, p_week_ending)
+    payroll.tpp_import_reset(p_provider_id, p_week_ending)
+
+  TABLE READS (via supabase.schema('payroll').from()):
+    payroll.tpp_providers (active providers dropdown)
+    payroll.tpp_check_register_staging (history + expanded detail)
+
+  CONFIG:
+    Expects window.__APP_CONFIG__ = { SUPABASE_URL, SUPABASE_ANON_KEY }
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBerry — TPP Check Register Import</title>
+<link rel="icon" href="/eberry-admin-dashboard/favicon.svg">
+<meta name="theme-color" content="#01696F">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  background: #F7F6F2;
+  color: #28251D;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+:root {
+  --bg:          #F7F6F2;
+  --surface:     #FFFFFF;
+  --surface-alt: #F9F8F5;
+  --border:      #D4D1CA;
+  --text:        #28251D;
+  --text-muted:  #7A7974;
+  --text-faint:  #BAB9B4;
+  --primary:     #01696F;
+  --primary-hv:  #0C4E54;
+  --error:       #A12C7B;
+  --warning:     #964219;
+  --success:     #437A22;
+  --radius:      7px;
+  --radius-lg:   11px;
+  --shadow:      0 1px 4px rgba(0,0,0,.08);
+  --tabular-nums: tabular-nums;
+}
+
+/* Header */
+.page-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.page-header-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.page-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.page-subtitle { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.back-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.back-link:hover { color: var(--primary-hv); }
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+.container { max-width: 1400px; margin: 0 auto; padding: 16px 20px 60px; }
+
+/* Buttons */
+button { cursor: pointer; font-family: inherit; font-size: 13px; border-radius: var(--radius); transition: all .15s; }
+.btn-primary {
+  background: var(--primary); color: #fff; border: none;
+  padding: 0 16px; height: 34px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary:hover { background: var(--primary-hv); }
+.btn-primary:disabled { opacity: .45; cursor: default; }
+.btn-secondary {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); padding: 0 13px; height: 34px;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.btn-secondary:hover { background: var(--surface-alt); }
+.btn-secondary:disabled { opacity: .45; cursor: default; }
+.btn-ghost {
+  background: none; border: none; color: var(--primary); padding: 0 8px; height: 28px; font-size: 12px;
+}
+.btn-ghost:hover { color: var(--primary-hv); text-decoration: underline; }
+.btn-danger {
+  background: #FBEEEF; color: var(--error); border: 1px solid #E9CCD7;
+  padding: 0 12px; height: 28px; font-size: 12px; font-weight: 600;
+}
+.btn-danger:hover { background: #F6DDE3; }
+.btn-mini {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0 9px; height: 24px; font-size: 11px; font-weight: 500;
+  border-radius: 5px;
+}
+.btn-mini:hover { background: var(--surface-alt); }
+
+/* Card / section */
+.section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin-bottom: 18px;
+}
+.section-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 14px; gap: 12px;
+}
+.section-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.section-subtitle { font-size: 12px; color: var(--text-muted); }
+
+/* Form row */
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 240px) 1fr;
+  gap: 14px;
+  align-items: end;
+}
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field label {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.field-hint { font-size: 11px; color: var(--text-faint); }
+.field-error { font-size: 11px; color: var(--error); }
+input[type=date], select, input[type=text] {
+  height: 34px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text);
+  padding: 0 10px; font-size: 13px; font-family: inherit; outline: none;
+}
+input[type=date]:focus, select:focus, input[type=text]:focus {
+  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(1,105,111,.08);
+}
+input:disabled, select:disabled { opacity: .55; cursor: not-allowed; background: var(--surface-alt); }
+
+/* Drop zone */
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  text-align: center;
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 76px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px;
+  transition: all .15s;
+}
+.dropzone.dragover { border-color: var(--primary); background: rgba(1,105,111,.05); color: var(--primary); }
+.dropzone.has-file { border-style: solid; border-color: var(--success); background: #F3F8EE; color: var(--text); }
+.dropzone.disabled { opacity: .5; cursor: not-allowed; }
+.dropzone .file-name { font-weight: 600; color: var(--text); font-size: 13px; }
+.dropzone .file-meta { font-size: 11px; color: var(--text-muted); }
+.dropzone-clear {
+  background: none; border: none; color: var(--error); font-size: 11px; text-decoration: underline; padding: 4px;
+}
+
+/* Banner */
+.banner {
+  padding: 10px 14px; border-radius: var(--radius); font-size: 13px;
+  margin: 0 0 12px; display: none;
+}
+.banner.show { display: block; }
+.banner-error { background: #FBEEEF; color: var(--error); border: 1px solid #E9CCD7; }
+.banner-warn  { background: #FCF1E6; color: var(--warning); border: 1px solid #ECD3B5; }
+.banner-info  { background: #E7F3F4; color: var(--primary); border: 1px solid #B5DEDF; }
+
+/* Summary badges */
+.summary-bar {
+  display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0;
+}
+.badge-stat {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 20px;
+  font-size: 12px; font-weight: 600;
+  border: 1px solid;
+  font-variant-numeric: var(--tabular-nums);
+}
+.badge-stat .num {
+  font-variant-numeric: var(--tabular-nums);
+  font-weight: 700;
+}
+.badge-matched   { background: #ECF5E1; color: var(--success); border-color: #C7DEB1; }
+.badge-mismatch  { background: #FCF1E6; color: var(--warning); border-color: #ECD3B5; }
+.badge-nopay     { background: #FCEAD7; color: #B45313; border-color: #E7C39A; }
+.badge-noworker  { background: #FBEEEF; color: var(--error); border-color: #E9CCD7; }
+.badge-dup       { background: #EDEDEA; color: var(--text-muted); border-color: #D4D1CA; }
+
+/* Status badge inside table cells */
+.cell-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 12px;
+  font-size: 11px; font-weight: 600;
+  white-space: nowrap;
+}
+.cb-matched   { background: #ECF5E1; color: var(--success); }
+.cb-mismatch  { background: #FCF1E6; color: var(--warning); }
+.cb-nopay     { background: #FCEAD7; color: #B45313; }
+.cb-noworker  { background: #FBEEEF; color: var(--error); }
+.cb-dup       { background: #EDEDEA; color: var(--text-muted); }
+
+/* Gross totals card */
+.totals-card {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 14px 0;
+}
+.totals-cell {
+  padding: 12px 16px;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.totals-cell:last-child { border-right: none; }
+.totals-cell .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.totals-cell .value {
+  font-size: 17px; font-weight: 700; color: var(--text);
+  font-variant-numeric: var(--tabular-nums);
+}
+.totals-cell.variance-good .value { color: var(--success); }
+.totals-cell.variance-bad .value  { color: var(--warning); }
+
+/* Table */
+.table-wrap {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: auto; max-height: 520px; background: var(--surface);
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  position: sticky; top: 0;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 11px; font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+  white-space: nowrap;
+  z-index: 1;
+}
+tbody td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  font-variant-numeric: var(--tabular-nums);
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--surface-alt); }
+td.num { text-align: right; font-variant-numeric: var(--tabular-nums); }
+td.notes-cell { color: var(--text-muted); font-size: 12px; max-width: 280px; }
+td.notes-cell .truncate {
+  display: inline-block; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Commit section */
+.commit-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.partial-check {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.partial-check input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--primary); }
+.commit-row {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.reset-link {
+  font-size: 12px; color: var(--text-muted);
+}
+.reset-link a { color: var(--error); text-decoration: underline; cursor: pointer; }
+
+/* Toast */
+.toast {
+  position: fixed; top: 70px; right: 20px; z-index: 100;
+  background: var(--surface); border: 1px solid var(--success);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 12px rgba(0,0,0,.12);
+  padding: 14px 18px;
+  max-width: 360px;
+  display: none;
+}
+.toast.show { display: block; animation: slide-in .25s ease-out; }
+.toast.error { border-color: var(--error); }
+.toast-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.toast-body { font-size: 12px; color: var(--text-muted); }
+.toast-close { float: right; background: none; border: none; color: var(--text-faint); font-size: 16px; padding: 0 4px; }
+@keyframes slide-in { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 200;
+  display: none; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal-backdrop.show { display: flex; }
+.modal {
+  background: var(--surface); border-radius: var(--radius-lg);
+  padding: 22px;
+  max-width: 540px; width: 100%;
+  box-shadow: 0 12px 36px rgba(0,0,0,.2);
+}
+.modal-header { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.modal-body  { font-size: 13px; color: var(--text); margin-bottom: 14px; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-pickrow {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; gap: 12px;
+}
+.modal-pickrow:hover { background: var(--surface-alt); border-color: var(--primary); }
+.modal-pickrow .meta { font-size: 12px; color: var(--text-muted); font-variant-numeric: var(--tabular-nums); }
+
+/* History */
+.history-filter {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: end;
+  margin-bottom: 14px;
+}
+.history-row-detail {
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+}
+.history-row-detail .table-wrap { max-height: 360px; border: none; border-radius: 0; }
+.expand-btn {
+  background: none; border: none; color: var(--primary);
+  font-size: 12px; cursor: pointer; padding: 2px 6px;
+}
+.expand-btn:hover { text-decoration: underline; }
+
+/* Skeleton */
+.skel {
+  display: inline-block; height: 10px;
+  background: linear-gradient(90deg, #EDEDEA 0%, #F7F6F2 50%, #EDEDEA 100%);
+  background-size: 200% 100%;
+  animation: skel 1.2s linear infinite;
+  border-radius: 4px;
+  min-width: 60px;
+}
+@keyframes skel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.empty-state {
+  text-align: center; padding: 36px 20px; color: var(--text-muted);
+}
+.empty-state h3 { font-size: 14px; color: var(--text); margin-bottom: 4px; }
+.empty-state p { font-size: 12px; }
+
+/* Access-denied state */
+.access-denied {
+  text-align: center; padding: 60px 20px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.access-denied h2 { font-size: 18px; margin-bottom: 8px; color: var(--text); }
+.access-denied p  { font-size: 13px; color: var(--text-muted); }
+
+@media (max-width: 760px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .totals-card { grid-template-columns: 1fr; }
+  .totals-cell { border-right: none; border-bottom: 1px solid var(--border); }
+  .totals-cell:last-child { border-bottom: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div class="page-header-left">
+    <a href="/eberry-admin-dashboard/" class="back-link">← Back</a>
+    <div>
+      <div class="page-title">TPP Check Register Import</div>
+      <div class="page-subtitle">Backfill third-party-paper check numbers from provider weekly registers</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span id="auth-pill" class="section-subtitle" style="font-variant-numeric:tabular-nums"></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <div id="banner" class="banner"></div>
+
+  <!-- Access denied state (hidden by default) -->
+  <div id="access-denied" class="access-denied" style="display:none">
+    <h2>Access denied</h2>
+    <p>This page requires the Payroll Admin role. Contact your administrator if you need access.</p>
+  </div>
+
+  <div id="main-content">
+
+    <!-- ───────── IMPORT PANEL ───────── -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Import</span>
+        <span class="section-subtitle" id="step-label">Select provider, week, and CSV file</span>
+      </div>
+
+      <div class="form-grid">
+        <div class="field">
+          <label for="provider-select">Provider</label>
+          <select id="provider-select" onchange="onProviderChange()">
+            <option value="">Loading providers...</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="week-ending">Week ending (Saturday)</label>
+          <input type="date" id="week-ending" onchange="onWeekEndingChange()">
+          <span class="field-error" id="week-ending-err" style="display:none"></span>
+        </div>
+        <div class="field">
+          <label>CSV file</label>
+          <div id="dropzone" class="dropzone disabled">
+            <span id="dz-text">Drop CSV here or click to choose</span>
+            <span class="field-hint" id="dz-hint">Select a provider and week ending first</span>
+            <input id="csv-file-input" type="file" accept=".csv,text/csv,text/plain,application/vnd.ms-excel" style="display:none">
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px; display:flex; gap:10px; align-items:center;">
+        <button id="parse-btn" class="btn-primary" onclick="onParseClick()" disabled>Upload &amp; Parse</button>
+        <span id="parse-status" class="section-subtitle"></span>
+      </div>
+
+      <!-- Preview section, hidden until parse completes -->
+      <div id="preview-section" style="display:none; margin-top:18px;">
+
+        <div class="summary-bar" id="summary-bar"></div>
+
+        <div class="totals-card" id="totals-card"></div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:130px">Status</th>
+                <th style="width:110px">Emp Code</th>
+                <th style="width:180px">Worker Name</th>
+                <th style="width:120px">TPP Check #</th>
+                <th style="width:110px;text-align:right">CSV Gross</th>
+                <th>Notes</th>
+                <th style="width:130px;text-align:center">Action</th>
+              </tr>
+            </thead>
+            <tbody id="preview-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="commit-section">
+          <div id="unresolved-warning" class="banner banner-warn show" style="display:none"></div>
+
+          <div id="partial-check-row" class="partial-check" style="display:none">
+            <input type="checkbox" id="partial-check" onchange="onPartialChange()">
+            <label for="partial-check">I understand — commit matched rows only and skip the rest.</label>
+          </div>
+
+          <div class="commit-row">
+            <button id="commit-btn" class="btn-primary" onclick="onCommitClick()" disabled>Commit 0 Matched Rows</button>
+            <span id="commit-status" class="section-subtitle"></span>
+            <span class="reset-link">Need to re-upload? <a onclick="onResetClick()">Reset this import</a></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ───────── BACKFILL HISTORY PANEL ───────── -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Backfill history</span>
+        <button class="btn-ghost" onclick="loadHistory()">↻ Refresh</button>
+      </div>
+
+      <div class="history-filter">
+        <div class="field">
+          <label for="hf-provider">Provider</label>
+          <select id="hf-provider" onchange="renderHistory()">
+            <option value="">All providers</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="hf-from">Week ending from</label>
+          <input type="date" id="hf-from" onchange="renderHistory()">
+        </div>
+        <div class="field">
+          <label for="hf-to">Week ending to</label>
+          <input type="date" id="hf-to" onchange="renderHistory()">
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:130px">Provider</th>
+              <th style="width:120px">Week ending</th>
+              <th style="width:120px;text-align:right">Rows committed</th>
+              <th style="width:180px">Committed at</th>
+              <th style="width:220px">Imported by</th>
+              <th style="width:120px;text-align:center">Detail</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /#main-content -->
+
+</div><!-- /.container -->
+
+<!-- Confirm dialog modal -->
+<div class="modal-backdrop" id="modal-backdrop" onclick="onModalBackdropClick(event)">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<!-- Result toast -->
+<div class="toast" id="toast">
+  <button class="toast-close" onclick="hideToast()">×</button>
+  <div class="toast-title" id="toast-title"></div>
+  <div class="toast-body" id="toast-body"></div>
+</div>
+
+<script type="module">
+// ─────────────────────────────────────────────────────────────────────────────
+// Supabase init
+// ─────────────────────────────────────────────────────────────────────────────
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const cfg = window.__APP_CONFIG__ || {};
+const SUPABASE_URL = cfg.SUPABASE_URL  || 'https://opdwtijyropzoyeseoij.supabase.co';
+const SUPABASE_KEY = cfg.SUPABASE_ANON_KEY || '';
+
+if (!SUPABASE_KEY) {
+  showBanner('SUPABASE_ANON_KEY is not set in window.__APP_CONFIG__. Data cannot load.', 'error');
+}
+
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+let providers     = [];
+let providerId    = null;
+let weekEnding    = null;
+let csvFile       = null;
+
+let parseStatus   = 'idle';   // 'idle' | 'loading' | 'success' | 'error'
+let stagingRows   = [];
+let previewData   = null;
+
+let commitStatus  = 'idle';
+let allowPartial  = false;
+
+let historyRows   = [];
+let expandedStagingIds = new Set();  // staging_ids whose detail is expanded
+let detailCache   = new Map();       // staging_id -> rows
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  // Quick auth/role check
+  try {
+    const { data: { user } } = await sb.auth.getUser();
+    if (user) {
+      document.getElementById('auth-pill').textContent = user.email || '';
+      // Soft client-side role gate. Server RPCs are the actual enforcement.
+      // We don't hard-block here in case the role function isn't deployed everywhere yet.
+    } else {
+      // No session — show empty state but let user attempt; RPCs will fail with auth error
+      document.getElementById('auth-pill').textContent = 'Not signed in';
+    }
+  } catch (e) {
+    console.warn('Auth probe failed:', e);
+  }
+
+  // Default week ending = most recent Saturday
+  document.getElementById('week-ending').value = mostRecentSaturday();
+  weekEnding = document.getElementById('week-ending').value;
+
+  await loadProviders();
+  await loadHistory();
+  attachDropzone();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Providers
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadProviders() {
+  try {
+    const { data, error } = await sb
+      .schema('payroll')
+      .from('tpp_providers')
+      .select('provider_id, name, is_active')
+      .eq('is_active', true)
+      .order('name');
+    if (error) throw error;
+    providers = data || [];
+
+    const sel  = document.getElementById('provider-select');
+    const hfp  = document.getElementById('hf-provider');
+    sel.innerHTML = '<option value="">Select a provider...</option>' +
+      providers.map(p => `<option value="${escAttr(p.provider_id)}">${escHtml(p.name)}</option>`).join('');
+    hfp.innerHTML = '<option value="">All providers</option>' +
+      providers.map(p => `<option value="${escAttr(p.provider_id)}">${escHtml(p.name)}</option>`).join('');
+  } catch (err) {
+    showBanner('Failed to load providers — ' + (err.message || String(err)), 'error');
+  }
+}
+
+window.onProviderChange = function () {
+  providerId = document.getElementById('provider-select').value || null;
+  // Reset downstream state on provider change
+  csvFile = null;
+  parseStatus = 'idle';
+  stagingRows = [];
+  previewData = null;
+  allowPartial = false;
+  document.getElementById('csv-file-input').value = '';
+  document.getElementById('preview-section').style.display = 'none';
+  document.getElementById('parse-status').textContent = '';
+  updateDropzoneUI();
+  updateParseButton();
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Week ending
+// ─────────────────────────────────────────────────────────────────────────────
+window.onWeekEndingChange = function () {
+  const val = document.getElementById('week-ending').value;
+  const errEl = document.getElementById('week-ending-err');
+  if (val) {
+    // Check Saturday (JS getDay: Sat = 6)
+    const d = new Date(val + 'T12:00:00');
+    if (d.getDay() !== 6) {
+      errEl.textContent = 'Must be a Saturday';
+      errEl.style.display = '';
+      weekEnding = null;
+    } else {
+      errEl.style.display = 'none';
+      weekEnding = val;
+    }
+  } else {
+    weekEnding = null;
+    errEl.style.display = 'none';
+  }
+  // Reset downstream state on week change
+  csvFile = null;
+  parseStatus = 'idle';
+  stagingRows = [];
+  previewData = null;
+  allowPartial = false;
+  document.getElementById('csv-file-input').value = '';
+  document.getElementById('preview-section').style.display = 'none';
+  document.getElementById('parse-status').textContent = '';
+  updateDropzoneUI();
+  updateParseButton();
+};
+
+function mostRecentSaturday() {
+  const today = new Date();
+  // JS: 0=Sun, 6=Sat
+  const dow = today.getDay();
+  const daysBack = (dow + 1) % 7;  // Sat = 0, Sun = 1, Mon = 2, ..., Fri = 6
+  const sat = new Date(today);
+  sat.setDate(today.getDate() - daysBack);
+  const y = sat.getFullYear();
+  const m = String(sat.getMonth() + 1).padStart(2, '0');
+  const d = String(sat.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dropzone
+// ─────────────────────────────────────────────────────────────────────────────
+function attachDropzone() {
+  const dz   = document.getElementById('dropzone');
+  const inp  = document.getElementById('csv-file-input');
+
+  dz.addEventListener('click', () => {
+    if (dz.classList.contains('disabled')) return;
+    inp.click();
+  });
+  inp.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) handleFile(f);
+  });
+  ['dragenter', 'dragover'].forEach(ev =>
+    dz.addEventListener(ev, (e) => {
+      e.preventDefault();
+      if (!dz.classList.contains('disabled')) dz.classList.add('dragover');
+    }));
+  ['dragleave', 'drop'].forEach(ev =>
+    dz.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dz.classList.remove('dragover');
+    }));
+  dz.addEventListener('drop', (e) => {
+    if (dz.classList.contains('disabled')) return;
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+}
+
+function handleFile(f) {
+  // Validate
+  if (f.size > 5 * 1024 * 1024) {
+    showBanner('CSV file is larger than 5 MB. Are you sure this is the right file?', 'error');
+    return;
+  }
+  const name = (f.name || '').toLowerCase();
+  if (!name.endsWith('.csv') && !name.endsWith('.txt')) {
+    showBanner('Please upload a .csv file.', 'error');
+    return;
+  }
+  csvFile = f;
+  hideBanner();
+  updateDropzoneUI();
+  updateParseButton();
+}
+
+window.onDropzoneClear = function (e) {
+  e.stopPropagation();
+  csvFile = null;
+  document.getElementById('csv-file-input').value = '';
+  updateDropzoneUI();
+  updateParseButton();
+};
+
+function updateDropzoneUI() {
+  const dz = document.getElementById('dropzone');
+  const txt = document.getElementById('dz-text');
+  const hint = document.getElementById('dz-hint');
+
+  const ready = !!providerId && !!weekEnding;
+  dz.classList.toggle('disabled', !ready);
+
+  if (csvFile) {
+    dz.classList.add('has-file');
+    txt.innerHTML = `<span class="file-name">${escHtml(csvFile.name)}</span>`;
+    hint.innerHTML = `<span class="file-meta">${(csvFile.size / 1024).toFixed(1)} KB</span>
+      &nbsp;·&nbsp;<button class="dropzone-clear" onclick="onDropzoneClear(event)">Remove</button>`;
+  } else {
+    dz.classList.remove('has-file');
+    txt.textContent = 'Drop CSV here or click to choose';
+    hint.textContent = ready ? '.csv files only, max 5 MB' : 'Select a provider and week ending first';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parse
+// ─────────────────────────────────────────────────────────────────────────────
+function updateParseButton() {
+  const btn = document.getElementById('parse-btn');
+  btn.disabled = !csvFile || !providerId || !weekEnding || parseStatus === 'loading';
+}
+
+window.onParseClick = async function () {
+  if (!csvFile || !providerId || !weekEnding) return;
+  parseStatus = 'loading';
+  updateParseButton();
+  const statusEl = document.getElementById('parse-status');
+  statusEl.textContent = 'Parsing CSV...';
+  hideBanner();
+
+  try {
+    const csvText = await csvFile.text();
+
+    const { data: parseData, error: parseErr } = await sb
+      .schema('payroll')
+      .rpc('tpp_import_parse', {
+        p_provider_id:  providerId,
+        p_csv_text:     csvText,
+        p_week_ending:  weekEnding
+      });
+    if (parseErr) throw parseErr;
+
+    stagingRows = parseData || [];
+
+    const { data: prev, error: prevErr } = await sb
+      .schema('payroll')
+      .rpc('tpp_import_preview', {
+        p_provider_id:  providerId,
+        p_week_ending:  weekEnding
+      });
+    if (prevErr) throw prevErr;
+
+    previewData = prev;
+    parseStatus = 'success';
+    statusEl.textContent = `Parsed ${stagingRows.length} row${stagingRows.length === 1 ? '' : 's'}.`;
+    renderPreview();
+    document.getElementById('preview-section').style.display = '';
+  } catch (err) {
+    parseStatus = 'error';
+    statusEl.textContent = '';
+    showBanner('Parse failed — ' + (err.message || String(err)), 'error');
+    console.error(err);
+  } finally {
+    updateParseButton();
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preview rendering
+// ─────────────────────────────────────────────────────────────────────────────
+function renderPreview() {
+  if (!previewData) return;
+
+  // Summary bar
+  const counts = previewData.counts_by_status || {};
+  const matched  = counts.matched            || 0;
+  const mismatch = counts.amount_mismatch    || 0;
+  const nopay    = counts.unmatched_paycheck || 0;
+  const noworker = counts.unmatched_worker   || 0;
+  const dups     = counts.duplicate          || 0;
+  document.getElementById('summary-bar').innerHTML = `
+    <span class="badge-stat badge-matched"><span class="num">${matched}</span> Matched</span>
+    <span class="badge-stat badge-mismatch"><span class="num">${mismatch}</span> Amount Mismatch</span>
+    <span class="badge-stat badge-nopay"><span class="num">${nopay}</span> No Paycheck</span>
+    <span class="badge-stat badge-noworker"><span class="num">${noworker}</span> Worker Not Found</span>
+    <span class="badge-stat badge-dup"><span class="num">${dups}</span> Duplicates</span>
+  `;
+
+  // Totals card
+  const totalCsv     = Number(previewData.total_gross_csv      || 0);
+  const totalMatched = Number(previewData.total_gross_matched  || 0);
+  const variance     = Number(previewData.gross_variance       || (totalCsv - totalMatched));
+  const isClean      = !!previewData.is_clean;
+  const varianceClass = (Math.abs(variance) < 0.005) ? 'variance-good' : 'variance-bad';
+  document.getElementById('totals-card').innerHTML = `
+    <div class="totals-cell">
+      <div class="label">CSV total gross</div>
+      <div class="value">${fmtCurrency(totalCsv)}</div>
+    </div>
+    <div class="totals-cell">
+      <div class="label">Matched total gross</div>
+      <div class="value">${fmtCurrency(totalMatched)}</div>
+    </div>
+    <div class="totals-cell ${varianceClass}">
+      <div class="label">Variance</div>
+      <div class="value">${(Math.abs(variance) < 0.005) ? '✓ No variance' : fmtCurrency(variance)}</div>
+    </div>
+  `;
+
+  // Sort: problems first
+  const order = { unmatched_worker: 1, unmatched_paycheck: 2, duplicate: 3, amount_mismatch: 4, matched: 5 };
+  const sorted = stagingRows.slice().sort((a, b) =>
+    (order[a.match_status] || 9) - (order[b.match_status] || 9));
+
+  // Table
+  const tbody = document.getElementById('preview-tbody');
+  tbody.innerHTML = sorted.map(r => previewRowHtml(r)).join('') || `
+    <tr><td colspan="7"><div class="empty-state"><h3>No rows parsed</h3>
+    <p>The CSV produced zero rows. Check the file format.</p></div></td></tr>`;
+
+  // Unresolved warning
+  const warnEl = document.getElementById('unresolved-warning');
+  const partRow = document.getElementById('partial-check-row');
+  const unresolvedCount = (counts.unmatched_worker || 0) +
+                          (counts.unmatched_paycheck || 0) +
+                          (counts.duplicate || 0) +
+                          (counts.amount_mismatch || 0);
+
+  if (!isClean && unresolvedCount > 0) {
+    warnEl.style.display = '';
+    warnEl.classList.add('show', 'banner-warn');
+    warnEl.innerHTML = `⚠ ${unresolvedCount} row${unresolvedCount === 1 ? '' : 's'} not matched and will be skipped on commit.
+      These paychecks will not receive a check number.`;
+    partRow.style.display = '';
+  } else {
+    warnEl.style.display = 'none';
+    partRow.style.display = 'none';
+    document.getElementById('partial-check').checked = false;
+    allowPartial = false;
+  }
+
+  // Commit button
+  updateCommitButton();
+}
+
+function previewRowHtml(r) {
+  const badge = statusBadge(r.match_status);
+  const empCode = escHtml(r.employee_code || '—');
+  const wname   = escHtml(r.worker_name   || '—');
+  const chk     = escHtml(r.external_check_number || '—');
+  const gross   = (r.gross_amount != null) ? fmtCurrency(Number(r.gross_amount)) : '—';
+  const notes   = r.notes || '';
+  const action  = rowActionHtml(r);
+  return `
+    <tr data-staging-id="${escAttr(r.staging_id)}">
+      <td>${badge}</td>
+      <td>${empCode}</td>
+      <td>${wname}</td>
+      <td>${chk}</td>
+      <td class="num">${gross}</td>
+      <td class="notes-cell"><span class="truncate" title="${escAttr(notes)}">${escHtml(notes) || '<span style="color:var(--text-faint)">—</span>'}</span></td>
+      <td style="text-align:center">${action}</td>
+    </tr>`;
+}
+
+function statusBadge(status) {
+  switch (status) {
+    case 'matched':            return '<span class="cell-badge cb-matched">Matched</span>';
+    case 'amount_mismatch':    return '<span class="cell-badge cb-mismatch">Amount mismatch</span>';
+    case 'unmatched_paycheck': return '<span class="cell-badge cb-nopay">No paycheck</span>';
+    case 'unmatched_worker':   return '<span class="cell-badge cb-noworker">Worker not found</span>';
+    case 'duplicate':          return '<span class="cell-badge cb-dup">Duplicate</span>';
+    default:                   return `<span class="cell-badge cb-dup">${escHtml(status || '—')}</span>`;
+  }
+}
+
+function rowActionHtml(r) {
+  const sid = escAttr(r.staging_id);
+  switch (r.match_status) {
+    case 'matched':            return '<span style="color:var(--text-faint);font-size:11px">—</span>';
+    case 'amount_mismatch':    return `<button class="btn-mini" onclick="onOverrideClick('${sid}')">Override</button>`;
+    case 'unmatched_worker':
+    case 'unmatched_paycheck': return `<button class="btn-mini" onclick="onFlagClick('${sid}')">Flag</button>`;
+    case 'duplicate':          return `<button class="btn-mini" onclick="onPickPaycheckClick('${sid}')">Select paycheck</button>`;
+    default:                   return '';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-row actions (staging table direct updates)
+// ─────────────────────────────────────────────────────────────────────────────
+window.onOverrideClick = function (stagingId) {
+  const row = stagingRows.find(r => r.staging_id === stagingId);
+  if (!row) return;
+  showConfirmModal({
+    title: 'Override amount mismatch?',
+    body: `<div>Force-match <b>${escHtml(row.worker_name || row.employee_code || stagingId)}</b>
+            despite the gross-amount difference?</div>
+            <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">
+              The TPP check number will be saved to the matched paycheck on commit.
+            </div>`,
+    confirmLabel: 'Override',
+    onConfirm: () => updateStagingRow(stagingId, { match_status: 'matched', notes: appendNote(row.notes, 'Overridden by admin') })
+  });
+};
+
+window.onFlagClick = function (stagingId) {
+  const row = stagingRows.find(r => r.staging_id === stagingId);
+  if (!row) return;
+  updateStagingRow(stagingId, { notes: appendNote(row.notes, 'Flagged for investigation') });
+};
+
+window.onPickPaycheckClick = async function (stagingId) {
+  const row = stagingRows.find(r => r.staging_id === stagingId);
+  if (!row) return;
+
+  // Pull candidate paychecks for this worker + the selected pay period
+  let candidates = [];
+  if (row.resolved_worker_id) {
+    const { data, error } = await sb
+      .schema('payroll')
+      .from('paychecks')
+      .select('paycheck_id, gross_amount, net_amount, check_number, status, pay_period_id')
+      .eq('worker_id', row.resolved_worker_id)
+      .order('pay_period_id', { ascending: false })
+      .limit(20);
+    if (error) {
+      showBanner('Could not list candidate paychecks — ' + (error.message || String(error)), 'error');
+      return;
+    }
+    candidates = data || [];
+  }
+
+  if (!candidates.length) {
+    showBanner('No paychecks found for this worker. Cannot resolve duplicate.', 'warn');
+    return;
+  }
+
+  const rowsHtml = candidates.map(p => `
+    <div class="modal-pickrow" onclick="onPickPaycheckChoice('${escAttr(stagingId)}','${escAttr(p.paycheck_id)}')">
+      <div>
+        <div><b>${escHtml(p.check_number || '(no check #)')}</b> — ${escHtml(p.status || '')}</div>
+        <div class="meta">Paycheck ${escHtml(p.paycheck_id.slice(0, 8))}…</div>
+      </div>
+      <div class="meta" style="text-align:right">
+        Gross: ${fmtCurrency(Number(p.gross_amount || 0))}<br>
+        Net: ${fmtCurrency(Number(p.net_amount || 0))}
+      </div>
+    </div>`).join('');
+
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-header">Select paycheck for ${escHtml(row.worker_name || row.employee_code || 'this row')}</div>
+    <div class="modal-body">Choose which paycheck this TPP entry should be matched to:</div>
+    <div style="max-height:340px;overflow:auto">${rowsHtml}</div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn-secondary" onclick="hideModal()">Cancel</button>
+    </div>`;
+  document.getElementById('modal-backdrop').classList.add('show');
+};
+
+window.onPickPaycheckChoice = async function (stagingId, paycheckId) {
+  hideModal();
+  const row = stagingRows.find(r => r.staging_id === stagingId);
+  await updateStagingRow(stagingId, {
+    resolved_paycheck_id: paycheckId,
+    match_status: 'matched',
+    notes: appendNote(row && row.notes, `Paycheck manually selected (${paycheckId.slice(0, 8)}…)`)
+  });
+};
+
+async function updateStagingRow(stagingId, patch) {
+  try {
+    const { error } = await sb
+      .schema('payroll')
+      .from('tpp_check_register_staging')
+      .update(patch)
+      .eq('staging_id', stagingId);
+    if (error) throw error;
+    // Refresh preview from server so totals/counts/variance update consistently
+    const { data: prev, error: prevErr } = await sb
+      .schema('payroll')
+      .rpc('tpp_import_preview', { p_provider_id: providerId, p_week_ending: weekEnding });
+    if (prevErr) throw prevErr;
+    previewData = prev;
+    // Local row patch too
+    const r = stagingRows.find(r => r.staging_id === stagingId);
+    if (r) Object.assign(r, patch);
+    renderPreview();
+  } catch (err) {
+    showBanner('Could not update row — ' + (err.message || String(err)), 'error');
+  }
+}
+
+function appendNote(existing, addition) {
+  if (!existing) return addition;
+  if (existing.includes(addition)) return existing;
+  return `${existing} · ${addition}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Commit
+// ─────────────────────────────────────────────────────────────────────────────
+window.onPartialChange = function () {
+  allowPartial = document.getElementById('partial-check').checked;
+  updateCommitButton();
+};
+
+function updateCommitButton() {
+  const btn = document.getElementById('commit-btn');
+  const matched = (previewData && previewData.counts_by_status && previewData.counts_by_status.matched) || 0;
+  btn.textContent = `Commit ${matched} Matched Row${matched === 1 ? '' : 's'}`;
+  const isClean = !!(previewData && previewData.is_clean);
+  btn.disabled = commitStatus === 'loading'
+    || matched === 0
+    || (!isClean && !allowPartial);
+}
+
+window.onCommitClick = function () {
+  const matched = (previewData && previewData.counts_by_status && previewData.counts_by_status.matched) || 0;
+  if (!matched) return;
+  showConfirmModal({
+    title: 'Commit TPP check numbers?',
+    body: `<div>This will update <b>${matched} paycheck${matched === 1 ? '' : 's'}</b>
+            with TPP check numbers from the imported register.</div>
+            <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">
+              This action cannot be undone. (You can re-import if needed.)
+            </div>`,
+    confirmLabel: 'Commit',
+    onConfirm: doCommit
+  });
+};
+
+async function doCommit() {
+  commitStatus = 'loading';
+  document.getElementById('commit-status').textContent = 'Committing...';
+  updateCommitButton();
+  try {
+    const { data, error } = await sb
+      .schema('payroll')
+      .rpc('tpp_import_commit', {
+        p_provider_id: providerId,
+        p_week_ending: weekEnding
+      });
+    if (error) throw error;
+
+    const result = data || {};
+    showToast({
+      success: true,
+      title: '✓ Commit successful',
+      body: `${escHtml(result.provider_name || providerName(providerId))} · WE ${escHtml(result.week_ending || weekEnding)}<br>
+             <b>${result.committed_count || 0}</b> paycheck${result.committed_count === 1 ? '' : 's'} updated · <b>${result.skipped_count || 0}</b> skipped`
+    });
+    commitStatus = 'success';
+    document.getElementById('commit-status').textContent = '';
+    // Refresh history + clear preview
+    await loadHistory();
+    // Refresh preview so the staging rows now show as committed (or stop showing actions)
+    const { data: prev } = await sb
+      .schema('payroll')
+      .rpc('tpp_import_preview', { p_provider_id: providerId, p_week_ending: weekEnding });
+    previewData = prev;
+    renderPreview();
+  } catch (err) {
+    commitStatus = 'error';
+    document.getElementById('commit-status').textContent = '';
+    showToast({
+      success: false,
+      title: 'Commit failed',
+      body: escHtml(err.message || String(err))
+    });
+  } finally {
+    updateCommitButton();
+  }
+}
+
+window.onResetClick = function () {
+  if (!providerId || !weekEnding) return;
+  showConfirmModal({
+    title: 'Reset this import?',
+    body: `<div>This will delete all unreviewed staging rows for
+            <b>${escHtml(providerName(providerId))}</b> · WE <b>${escHtml(weekEnding)}</b>.</div>
+            <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">
+              Already-committed rows will not be affected.
+            </div>`,
+    confirmLabel: 'Reset',
+    danger: true,
+    onConfirm: doReset
+  });
+};
+
+async function doReset() {
+  try {
+    const { error } = await sb
+      .schema('payroll')
+      .rpc('tpp_import_reset', {
+        p_provider_id: providerId,
+        p_week_ending: weekEnding
+      });
+    if (error) throw error;
+    csvFile = null;
+    document.getElementById('csv-file-input').value = '';
+    document.getElementById('preview-section').style.display = 'none';
+    document.getElementById('parse-status').textContent = '';
+    stagingRows = [];
+    previewData = null;
+    allowPartial = false;
+    parseStatus = 'idle';
+    updateDropzoneUI();
+    updateParseButton();
+    showToast({ success: true, title: 'Import reset', body: 'You can upload a fresh CSV now.' });
+  } catch (err) {
+    showBanner('Reset failed — ' + (err.message || String(err)), 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History
+// ─────────────────────────────────────────────────────────────────────────────
+window.loadHistory = async function () {
+  renderHistorySkeleton();
+  try {
+    // Pull committed staging rows, then group client-side.
+    // staging_id is per-row, so we group by (provider, week, committed_at-truncated, imported_by)
+    const { data, error } = await sb
+      .schema('payroll')
+      .from('tpp_check_register_staging')
+      .select(`
+        staging_id,
+        tpp_provider_id,
+        week_ending,
+        committed_at,
+        imported_by,
+        match_status
+      `)
+      .not('committed_at', 'is', null)
+      .order('committed_at', { ascending: false })
+      .limit(2000);
+    if (error) throw error;
+
+    // Group by (provider_id, week_ending, committed_batch)
+    // committed_batch = floor committed_at to the minute so re-commits of the same batch group together
+    const groups = new Map();
+    (data || []).forEach(r => {
+      const ca   = r.committed_at ? new Date(r.committed_at) : null;
+      const caBucket = ca ? ca.toISOString().slice(0, 16) : 'unknown';   // YYYY-MM-DDTHH:MM
+      const key  = `${r.tpp_provider_id}|${r.week_ending}|${caBucket}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          group_key: key,
+          tpp_provider_id: r.tpp_provider_id,
+          provider_name: providerName(r.tpp_provider_id),
+          week_ending: r.week_ending,
+          committed_at: r.committed_at,
+          imported_by: r.imported_by,
+          committed_count: 0,
+          staging_ids: []
+        });
+      }
+      const g = groups.get(key);
+      // Only count matched as "committed_count" (skipped rows still bear committed_at = now())
+      if (r.match_status === 'matched') g.committed_count += 1;
+      g.staging_ids.push(r.staging_id);
+    });
+    historyRows = Array.from(groups.values()).sort((a, b) =>
+      String(b.committed_at).localeCompare(String(a.committed_at)));
+    renderHistory();
+  } catch (err) {
+    document.getElementById('history-tbody').innerHTML =
+      `<tr><td colspan="6"><div class="empty-state"><h3>Could not load history</h3><p>${escHtml(err.message || String(err))}</p></div></td></tr>`;
+  }
+};
+
+function renderHistorySkeleton() {
+  document.getElementById('history-tbody').innerHTML = Array(3).fill(0).map(() => `
+    <tr>
+      <td><span class="skel" style="width:80px"></span></td>
+      <td><span class="skel" style="width:80px"></span></td>
+      <td><span class="skel" style="width:40px"></span></td>
+      <td><span class="skel" style="width:120px"></span></td>
+      <td><span class="skel" style="width:140px"></span></td>
+      <td><span class="skel" style="width:50px"></span></td>
+    </tr>`).join('');
+}
+
+window.renderHistory = function () {
+  const tbody = document.getElementById('history-tbody');
+  const fProv = document.getElementById('hf-provider').value || '';
+  const fFrom = document.getElementById('hf-from').value     || '';
+  const fTo   = document.getElementById('hf-to').value       || '';
+
+  const rows = historyRows.filter(r => {
+    if (fProv && r.tpp_provider_id !== fProv) return false;
+    if (fFrom && r.week_ending < fFrom)        return false;
+    if (fTo   && r.week_ending > fTo)          return false;
+    return true;
+  });
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">
+      <h3>No commits yet</h3>
+      <p>Once you import and commit a TPP register, it will appear here.</p>
+    </div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => {
+    const expanded = expandedStagingIds.has(r.group_key);
+    return `
+      <tr data-group-key="${escAttr(r.group_key)}">
+        <td>${escHtml(r.provider_name || '—')}</td>
+        <td>${escHtml(r.week_ending || '—')}</td>
+        <td style="text-align:right">${r.committed_count}</td>
+        <td>${escHtml(formatDateTime(r.committed_at))}</td>
+        <td>${escHtml(r.imported_by ? r.imported_by.slice(0, 8) + '…' : '—')}</td>
+        <td style="text-align:center">
+          <button class="expand-btn" onclick="toggleHistoryDetail('${escAttr(r.group_key)}')">
+            ${expanded ? '▾ Hide' : '▸ View'}
+          </button>
+        </td>
+      </tr>
+      ${expanded ? `<tr class="history-row-detail" data-detail-for="${escAttr(r.group_key)}">
+        <td colspan="6">${renderHistoryDetail(r)}</td>
+      </tr>` : ''}
+    `;
+  }).join('');
+};
+
+window.toggleHistoryDetail = async function (groupKey) {
+  if (expandedStagingIds.has(groupKey)) {
+    expandedStagingIds.delete(groupKey);
+  } else {
+    expandedStagingIds.add(groupKey);
+    // Lazy-load detail rows
+    if (!detailCache.has(groupKey)) {
+      const group = historyRows.find(g => g.group_key === groupKey);
+      if (group) {
+        try {
+          const { data, error } = await sb
+            .schema('payroll')
+            .from('tpp_check_register_staging')
+            .select('staging_id, employee_code, worker_name, external_check_number, gross_amount, match_status, notes')
+            .in('staging_id', group.staging_ids)
+            .order('worker_name', { ascending: true });
+          if (error) throw error;
+          detailCache.set(groupKey, data || []);
+        } catch (err) {
+          showBanner('Could not load commit detail — ' + (err.message || String(err)), 'error');
+          detailCache.set(groupKey, []);
+        }
+      }
+    }
+  }
+  renderHistory();
+};
+
+function renderHistoryDetail(group) {
+  const detail = detailCache.get(group.group_key) || [];
+  if (!detail.length) {
+    return `<div class="empty-state"><h3>Loading detail...</h3></div>`;
+  }
+  const rowsHtml = detail.map(r => `
+    <tr>
+      <td>${escHtml(r.employee_code || '—')}</td>
+      <td>${escHtml(r.worker_name || '—')}</td>
+      <td>${escHtml(r.external_check_number || '—')}</td>
+      <td class="num">${r.gross_amount != null ? fmtCurrency(Number(r.gross_amount)) : '—'}</td>
+      <td>${statusBadge(r.match_status)}</td>
+      <td class="notes-cell"><span class="truncate" title="${escAttr(r.notes || '')}">${escHtml(r.notes || '')}</span></td>
+    </tr>`).join('');
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:90px">Emp Code</th>
+            <th style="width:160px">Worker Name</th>
+            <th style="width:120px">TPP Check #</th>
+            <th style="width:100px;text-align:right">Gross</th>
+            <th style="width:130px">Status</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+}
+
+function providerName(id) {
+  if (!id) return '—';
+  const p = providers.find(p => p.provider_id === id);
+  return p ? p.name : '—';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Confirm modal
+// ─────────────────────────────────────────────────────────────────────────────
+let pendingConfirmCallback = null;
+
+function showConfirmModal({ title, body, confirmLabel = 'Confirm', danger = false, onConfirm }) {
+  pendingConfirmCallback = onConfirm;
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-header">${title}</div>
+    <div class="modal-body">${body}</div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="hideModal()">Cancel</button>
+      <button class="${danger ? 'btn-danger' : 'btn-primary'}" onclick="runConfirm()">${escHtml(confirmLabel)}</button>
+    </div>`;
+  document.getElementById('modal-backdrop').classList.add('show');
+}
+
+window.runConfirm = function () {
+  const cb = pendingConfirmCallback;
+  pendingConfirmCallback = null;
+  hideModal();
+  if (cb) cb();
+};
+
+window.hideModal = function () {
+  document.getElementById('modal-backdrop').classList.remove('show');
+  pendingConfirmCallback = null;
+};
+
+window.onModalBackdropClick = function (e) {
+  if (e.target.id === 'modal-backdrop') hideModal();
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Toast
+// ─────────────────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast({ success, title, body }) {
+  const t = document.getElementById('toast');
+  t.classList.toggle('error', !success);
+  document.getElementById('toast-title').textContent = title;
+  document.getElementById('toast-body').innerHTML = body;  // body may contain safe HTML
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 8000);
+}
+window.hideToast = function () {
+  document.getElementById('toast').classList.remove('show');
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Banner
+// ─────────────────────────────────────────────────────────────────────────────
+function showBanner(msg, kind = 'error') {
+  const b = document.getElementById('banner');
+  b.className = `banner show banner-${kind}`;
+  b.textContent = msg;
+}
+function hideBanner() {
+  const b = document.getElementById('banner');
+  b.className = 'banner';
+  b.textContent = '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utils
+// ─────────────────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+function escAttr(s) {
+  if (s == null) return '';
+  return String(s).replace(/["'<>&]/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+function fmtCurrency(n) {
+  if (n == null || isNaN(n)) return '—';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function formatDateTime(s) {
+  if (!s) return '—';
+  try {
+    const d = new Date(s);
+    return d.toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
+  } catch (e) { return s; }
+}
+</script>
+
+</body>
+</html>
