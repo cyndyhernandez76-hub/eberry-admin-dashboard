@@ -1,1 +1,0 @@
-import{n as e}from"./supabase-XQdB1tDL.js";export{e as supabase};
