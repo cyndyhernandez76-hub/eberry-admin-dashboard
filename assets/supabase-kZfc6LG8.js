@@ -1,0 +1,1 @@
+import{n as e}from"./supabase-DpgsOL0j.js";export{e as supabase};

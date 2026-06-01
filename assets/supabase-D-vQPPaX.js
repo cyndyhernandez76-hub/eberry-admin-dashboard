@@ -1,1 +1,0 @@
-import{t as e}from"./supabase-C-2rcQXS.js";export{e as supabase};
