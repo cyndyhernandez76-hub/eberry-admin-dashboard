@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<!--
+  eBerry Admin Dashboard — Hours Offered & Refused (3/4 Compliance)
+  =================================================================
+  Live drill-down of hours offered, worked, and refused per H-2A worker.
+
+  TABS:
+    1. Daily               — single-day grid by home crew / farm / petition
+    2. Week-to-date        — Mon-anchor (or anchor day) running totals
+    3. Contract-to-date    — per-worker 3/4 floor running view (wraps fn_running_floor)
+    4. Exception queue     — workers on active assignment with no signal logged
+
+  RPCs:
+    public.report_hours_daily(p_work_date, p_filter)
+    public.report_hours_week_to_date(p_anchor_date, p_filter)
+    public.report_hours_contract_to_date(p_worker_id, p_petition_id, p_as_of)
+    public.list_hours_offered_daily(p_from, p_to, p_filter)  -- exception queue source
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBerry — Hours Offered & Refused</title>
+<link rel="icon" href="/eberry-admin-dashboard/favicon.svg">
+<meta name="theme-color" content="#01696F">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; background: #F7F6F2; color: #28251D; font-size: 14px; line-height: 1.5; min-height: 100vh; }
+:root { --bg:#F7F6F2; --surface:#FFFFFF; --surface-alt:#F9F8F5; --border:#D4D1CA; --text:#28251D; --text-muted:#7A7974; --text-faint:#BAB9B4; --primary:#01696F; --primary-hv:#0C4E54; --error:#A12C7B; --warning:#964219; --success:#437A22; --radius:7px; --radius-lg:11px; --shadow:0 1px 4px rgba(0,0,0,.08); }
+.page-header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; top: 0; z-index: 50; }
+.page-header-left { display: flex; align-items: center; gap: 12px; }
+.page-title { font-size: 16px; font-weight: 700; }
+.page-subtitle { font-size: 12px; color: var(--text-muted); }
+.back-link { color: var(--primary); text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 4px; }
+.back-link:hover { color: var(--primary-hv); }
+.container { max-width: 1500px; margin: 0 auto; padding: 16px 20px; }
+
+button { cursor: pointer; font-family: inherit; font-size: 13px; border-radius: var(--radius); transition: all .15s; }
+.btn-primary { background: var(--primary); color: #fff; border: none; padding: 7px 14px; font-weight: 600; }
+.btn-primary:hover { background: var(--primary-hv); }
+.btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 7px 14px; }
+.btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+
+input, select { font-family: inherit; font-size: 13px; padding: 6px 10px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+input:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(1,105,111,.15); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 16px; }
+.tab { background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -2px; padding: 10px 14px; font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer; }
+.tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.tab .count { display: inline-block; margin-left: 6px; padding: 1px 7px; font-size: 11px; font-weight: 700; background: var(--surface-alt); border-radius: 999px; color: var(--text-muted); }
+.tab.active .count { background: var(--primary); color: #fff; }
+
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 12px; }
+.toolbar label { font-size: 11px; color: var(--text-muted); display: flex; flex-direction: column; gap: 2px; }
+
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; }
+.kpi .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.kpi .value { font-size: 22px; font-weight: 700; color: var(--text); }
+.kpi .sub { font-size: 11px; color: var(--text-muted); }
+.kpi.exception .value { color: var(--error); }
+.kpi.refused .value { color: var(--warning); }
+.kpi.worked .value { color: var(--success); }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow); margin-bottom: 14px; }
+.card h2 { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+
+table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.grid th { background: var(--surface-alt); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; }
+table.grid td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.grid tr:hover td { background: var(--surface-alt); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.muted { color: var(--text-muted); }
+.pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.pill-exception { background: #FDECF2; color: var(--error); }
+.pill-refused { background: #FCEFE6; color: var(--warning); }
+.pill-worked { background: #ECF3E6; color: var(--success); }
+.pill-baseline { background: #E6EFF0; color: var(--primary); }
+.pill-absence { background: #F2EFE2; color: #7A6A22; }
+
+.status-on_track { color: var(--success); font-weight: 600; }
+.status-at_risk { color: var(--warning); font-weight: 600; }
+.status-below_pace { color: var(--error); font-weight: 600; }
+.status-owed_trueup { color: var(--error); font-weight: 700; }
+.status-complete { color: var(--text-muted); }
+
+.banner { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 12px; }
+.banner.error { background: #FDECF2; color: var(--error); border: 1px solid #F6C2DE; }
+.banner.info { background: #E6EFF0; color: var(--primary); border: 1px solid #B5D4D7; }
+
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty { text-align: center; padding: 30px; color: var(--text-muted); font-style: italic; }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.day-grid { display: grid; grid-template-columns: 90px repeat(7, 1fr); gap: 2px; font-size: 11px; }
+.day-grid .day-head { background: var(--surface-alt); padding: 4px; text-align: center; font-weight: 600; color: var(--text-muted); border-radius: 3px; }
+.day-grid .cell { padding: 5px 6px; border-radius: 3px; background: var(--surface-alt); text-align: center; }
+.day-grid .cell.worked { background: #ECF3E6; color: var(--success); }
+.day-grid .cell.refused { background: #FCEFE6; color: var(--warning); }
+.day-grid .cell.exception { background: #FDECF2; color: var(--error); }
+.day-grid .cell.baseline { background: #E6EFF0; color: var(--primary); }
+.day-grid .cell.absence { background: #F2EFE2; color: #7A6A22; }
+
+.contract-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.contract-search input { flex: 1; max-width: 400px; }
+.search-results { position: absolute; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); max-height: 280px; overflow-y: auto; min-width: 320px; z-index: 100; }
+.search-results .item { padding: 7px 12px; cursor: pointer; border-bottom: 1px solid var(--surface-alt); }
+.search-results .item:hover { background: var(--surface-alt); }
+.search-results .item .code { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<header class="page-header">
+  <div class="page-header-left">
+    <a class="back-link" href="/eberry-admin-dashboard/">← Dashboard</a>
+    <div>
+      <div class="page-title">Hours Offered &amp; Refused</div>
+      <div class="page-subtitle">H-2A 3/4 Compliance · Daily · Weekly · Contract</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="btn-secondary" id="refreshBtn" onclick="refreshActive()">Refresh</button>
+  </div>
+</header>
+
+<div class="container">
+  <div id="banner" class="banner info" style="display:none"></div>
+
+  <!-- Filters -->
+  <div class="toolbar">
+    <label>Farm
+      <select id="filtFarm"><option value="">All farms</option></select>
+    </label>
+    <label>Home crew
+      <select id="filtHomeCrew"><option value="">All crews</option></select>
+    </label>
+    <label>Petition
+      <select id="filtPetition"><option value="">All petitions</option></select>
+    </label>
+    <div style="flex:1"></div>
+    <button class="btn-secondary" onclick="resetFilters()">Reset</button>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="daily" onclick="setTab('daily')">Daily</button>
+    <button class="tab" data-tab="wtd" onclick="setTab('wtd')">Week-to-date</button>
+    <button class="tab" data-tab="ctd" onclick="setTab('ctd')">Contract-to-date</button>
+    <button class="tab" data-tab="exc" onclick="setTab('exc')">Exception queue <span class="count" id="excCount">0</span></button>
+  </div>
+
+  <!-- DAILY TAB -->
+  <section class="tab-panel active" id="panel-daily">
+    <div class="toolbar">
+      <label>Work date
+        <input type="date" id="dailyDate">
+      </label>
+      <label>&nbsp;
+        <button class="btn-primary" onclick="loadDaily()">Load</button>
+      </label>
+    </div>
+    <div class="kpi-row" id="dailyKpis"></div>
+    <div class="card">
+      <h2>Daily detail</h2>
+      <div style="max-height:600px; overflow:auto;">
+        <table class="grid" id="dailyTable">
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>Code</th>
+              <th>Farm</th>
+              <th>Home crew</th>
+              <th>Petition</th>
+              <th class="num">Offered</th>
+              <th class="num">Worked</th>
+              <th class="num">Refused</th>
+              <th>Source</th>
+              <th>Reason</th>
+              <th>Flag</th>
+            </tr>
+          </thead>
+          <tbody id="dailyBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- WEEK TO DATE TAB -->
+  <section class="tab-panel" id="panel-wtd">
+    <div class="toolbar">
+      <label>Anchor day (Mon-week)
+        <input type="date" id="wtdDate">
+      </label>
+      <label>&nbsp;
+        <button class="btn-primary" onclick="loadWtd()">Load</button>
+      </label>
+    </div>
+    <div class="kpi-row" id="wtdKpis"></div>
+    <div class="card">
+      <h2>Per-worker week to date</h2>
+      <div style="max-height:600px; overflow:auto;">
+        <table class="grid" id="wtdTable">
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>Farm</th>
+              <th>Home crew</th>
+              <th>Petition</th>
+              <th class="num">Days active</th>
+              <th class="num">Offered</th>
+              <th class="num">Worked</th>
+              <th class="num">Refused</th>
+              <th class="num">Exc days</th>
+              <th>Daily</th>
+            </tr>
+          </thead>
+          <tbody id="wtdBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONTRACT TO DATE TAB -->
+  <section class="tab-panel" id="panel-ctd">
+    <div class="contract-search" style="position:relative">
+      <input type="text" id="ctdSearch" placeholder="Search worker by name or employee code (H01234)…" oninput="onCtdSearchInput()">
+      <button class="btn-secondary" onclick="clearCtdSelection()">Clear</button>
+      <div id="ctdResults" class="search-results" style="display:none;"></div>
+    </div>
+    <div class="kpi-row" id="ctdKpis"></div>
+    <div class="card">
+      <h2 id="ctdTitle">Contract-to-date detail</h2>
+      <div id="ctdSegments"><p class="empty">Select a worker to see their contract running totals.</p></div>
+    </div>
+  </section>
+
+  <!-- EXCEPTION QUEUE TAB -->
+  <section class="tab-panel" id="panel-exc">
+    <div class="toolbar">
+      <label>From
+        <input type="date" id="excFrom">
+      </label>
+      <label>To
+        <input type="date" id="excTo">
+      </label>
+      <label>&nbsp;
+        <button class="btn-primary" onclick="loadExc()">Load</button>
+      </label>
+    </div>
+    <div class="kpi-row" id="excKpis"></div>
+    <div class="card">
+      <h2>Workers needing a reason</h2>
+      <div style="max-height:600px; overflow:auto;">
+        <table class="grid" id="excTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Worker</th>
+              <th>Code</th>
+              <th>Farm</th>
+              <th>Home crew</th>
+              <th>Petition</th>
+              <th class="num">Worked</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="excBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const SUPABASE_URL = 'https://opdwtijyropzoyeseoij.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_7nQMmXiQRYGzvmTJ6YZ4tQ_6u2XsVs9';
+const TENANT_ID    = '00000000-0000-0000-0000-000000000001';
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ────────── Helpers ──────────
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d=2) => (v==null) ? '—' : Number(v).toFixed(d);
+const fmtInt = (v) => (v==null) ? '—' : Number(v).toLocaleString();
+const todayISO = (() => new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,10))();
+
+function showBanner(msg, kind='info') {
+  const b = $('banner'); b.textContent = msg; b.className = 'banner ' + kind; b.style.display='block';
+  if (kind === 'info') setTimeout(() => { b.style.display='none'; }, 4000);
+}
+function hideBanner() { $('banner').style.display='none'; }
+
+function buildFilter() {
+  const f = { tenant_id: TENANT_ID };
+  const fv = $('filtFarm').value; if (fv) f.farm_id = fv;
+  const hc = $('filtHomeCrew').value; if (hc) f.home_crew_id = hc;
+  const p = $('filtPetition').value; if (p) f.petition_id = p;
+  return f;
+}
+
+// ────────── Filter dropdowns ──────────
+async function loadFilters() {
+  try {
+    const [farms, crews, pets] = await Promise.all([
+      sb.schema('hris').from('farms').select('farm_id,farm_name').eq('is_active', true).eq('tenant_id', TENANT_ID).order('farm_name'),
+      sb.schema('payroll').from('home_crews').select('home_crew_id,home_crew_label').eq('is_active', true).eq('tenant_id', TENANT_ID).order('home_crew_label'),
+      sb.schema('hris').from('petitions').select('petition_id,display_label,petition_number,status').in('status', ['active','pending']).eq('tenant_id', TENANT_ID).order('display_label', { nullsFirst: false }).order('petition_number').limit(500)
+    ]);
+    if (farms.data) {
+      $('filtFarm').innerHTML = '<option value="">All farms</option>' + farms.data.map(f => `<option value="${f.farm_id}">${escapeHtml(f.farm_name)}</option>`).join('');
+    }
+    if (crews.data) {
+      $('filtHomeCrew').innerHTML = '<option value="">All crews</option>' + crews.data.map(c => `<option value="${c.home_crew_id}">${escapeHtml(c.home_crew_label || '')}</option>`).join('');
+    }
+    if (pets.data) {
+      $('filtPetition').innerHTML = '<option value="">All petitions</option>' + pets.data.map(p => `<option value="${p.petition_id}">${escapeHtml(p.display_label || p.petition_number || '—')}</option>`).join('');
+    }
+  } catch (e) {
+    console.error('loadFilters', e);
+    showBanner('Filter load error: ' + (e.message || e), 'error');
+  }
+}
+
+function resetFilters() {
+  $('filtFarm').value = ''; $('filtHomeCrew').value = ''; $('filtPetition').value = '';
+  refreshActive();
+}
+
+function escapeHtml(s) { return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ────────── Tabs ──────────
+let activeTab = 'daily';
+window.setTab = function(t) {
+  activeTab = t;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-'+t));
+  // Auto-load if empty
+  if (t === 'daily' && !$('dailyBody').children.length) loadDaily();
+  if (t === 'wtd'   && !$('wtdBody').children.length)   loadWtd();
+  if (t === 'exc'   && !$('excBody').children.length)   loadExc();
+};
+
+window.refreshActive = function() {
+  if (activeTab === 'daily') loadDaily();
+  else if (activeTab === 'wtd') loadWtd();
+  else if (activeTab === 'ctd') { if (window._ctdWorker) loadCtd(window._ctdWorker, window._ctdPetition); }
+  else if (activeTab === 'exc') loadExc();
+};
+
+// ────────── DAILY ──────────
+window.loadDaily = async function() {
+  const date = $('dailyDate').value;
+  if (!date) { showBanner('Pick a date.', 'error'); return; }
+  $('dailyBody').innerHTML = '<tr><td colspan="11" class="empty"><span class="spinner"></span> Loading…</td></tr>';
+  try {
+    const { data, error } = await sb.rpc('report_hours_daily', { p_work_date: date, p_filter: buildFilter() });
+    if (error) throw error;
+    renderDaily(data || []);
+  } catch (e) {
+    console.error(e);
+    $('dailyBody').innerHTML = `<tr><td colspan="11" class="empty">Error: ${escapeHtml(e.message||e)}</td></tr>`;
+  }
+};
+
+function renderDaily(rows) {
+  // KPIs
+  const totalWorkers = rows.length;
+  const exc = rows.filter(r => r.is_exception).length;
+  const refused = rows.filter(r => (r.hours_refused||0) > 0).length;
+  const sumOffered = rows.reduce((a,r) => a + Number(r.hours_offered||0), 0);
+  const sumWorked  = rows.reduce((a,r) => a + Number(r.hours_worked||0),  0);
+  const sumRefused = rows.reduce((a,r) => a + Number(r.hours_refused||0), 0);
+  $('dailyKpis').innerHTML = `
+    <div class="kpi"><div class="label">Active workers</div><div class="value">${fmtInt(totalWorkers)}</div></div>
+    <div class="kpi worked"><div class="label">Hours offered</div><div class="value">${fmt(sumOffered,1)}</div><div class="sub">Worked ${fmt(sumWorked,1)}</div></div>
+    <div class="kpi refused"><div class="label">Hours refused</div><div class="value">${fmt(sumRefused,1)}</div><div class="sub">${refused} workers</div></div>
+    <div class="kpi exception"><div class="label">Exceptions</div><div class="value">${fmtInt(exc)}</div><div class="sub">no signal logged</div></div>
+  `;
+
+  if (!rows.length) { $('dailyBody').innerHTML = '<tr><td colspan="11" class="empty">No rows.</td></tr>'; return; }
+  $('dailyBody').innerHTML = rows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.worker_name)}</td>
+      <td class="muted">${escapeHtml(r.worker_code||'')}</td>
+      <td>${escapeHtml(r.farm_name||'—')}</td>
+      <td>${escapeHtml(r.home_crew_name||'—')}</td>
+      <td class="muted">${escapeHtml(r.petition_label||'—')}</td>
+      <td class="num">${fmt(r.hours_offered,2)}</td>
+      <td class="num">${fmt(r.hours_worked,2)}</td>
+      <td class="num">${fmt(r.hours_refused,2)}</td>
+      <td>${sourcePill(r.offered_source)}</td>
+      <td class="muted">${escapeHtml(r.reason_code||'')} ${r.reason_text ? '<br><small>'+escapeHtml(r.reason_text)+'</small>' : ''}</td>
+      <td>${r.is_exception ? '<span class="pill pill-exception">EXCEPTION</span>' : (r.hours_refused>0 ? '<span class="pill pill-refused">refused</span>' : (r.hours_worked>0 ? '<span class="pill pill-worked">worked</span>' : ''))}</td>
+    </tr>
+  `).join('');
+}
+
+function sourcePill(s) {
+  if (s === 'time_entries')  return '<span class="pill pill-worked">time_entry</span>';
+  if (s === 'baseline')      return '<span class="pill pill-baseline">baseline</span>';
+  if (s === 'absence')       return '<span class="pill pill-absence">absence</span>';
+  if (s === 'hours_refused') return '<span class="pill pill-refused">refused</span>';
+  if (s === 'exception')     return '<span class="pill pill-exception">none</span>';
+  return s || '';
+}
+
+// ────────── WEEK TO DATE ──────────
+window.loadWtd = async function() {
+  const date = $('wtdDate').value;
+  if (!date) { showBanner('Pick a date.', 'error'); return; }
+  $('wtdBody').innerHTML = '<tr><td colspan="10" class="empty"><span class="spinner"></span> Loading…</td></tr>';
+  try {
+    const { data, error } = await sb.rpc('report_hours_week_to_date', { p_anchor_date: date, p_filter: buildFilter() });
+    if (error) throw error;
+    renderWtd(data || []);
+  } catch (e) {
+    console.error(e);
+    $('wtdBody').innerHTML = `<tr><td colspan="10" class="empty">Error: ${escapeHtml(e.message||e)}</td></tr>`;
+  }
+};
+
+function renderWtd(rows) {
+  const totalWorkers = rows.length;
+  const sumOffered = rows.reduce((a,r) => a + Number(r.hours_offered_wk||0), 0);
+  const sumWorked  = rows.reduce((a,r) => a + Number(r.hours_worked_wk||0),  0);
+  const sumRefused = rows.reduce((a,r) => a + Number(r.hours_refused_wk||0), 0);
+  const sumExc     = rows.reduce((a,r) => a + Number(r.exception_days||0),   0);
+  $('wtdKpis').innerHTML = `
+    <div class="kpi"><div class="label">Workers</div><div class="value">${fmtInt(totalWorkers)}</div></div>
+    <div class="kpi worked"><div class="label">Hours offered (wk)</div><div class="value">${fmt(sumOffered,0)}</div><div class="sub">Worked ${fmt(sumWorked,0)}</div></div>
+    <div class="kpi refused"><div class="label">Refused (wk)</div><div class="value">${fmt(sumRefused,0)}</div></div>
+    <div class="kpi exception"><div class="label">Exception days</div><div class="value">${fmtInt(sumExc)}</div></div>
+  `;
+  if (!rows.length) { $('wtdBody').innerHTML = '<tr><td colspan="10" class="empty">No rows.</td></tr>'; return; }
+  $('wtdBody').innerHTML = rows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.worker_name)} <span class="muted">${escapeHtml(r.worker_code||'')}</span></td>
+      <td>${escapeHtml(r.farm_name||'—')}</td>
+      <td>${escapeHtml(r.home_crew_name||'—')}</td>
+      <td class="muted">${escapeHtml(r.petition_label||'—')}</td>
+      <td class="num">${fmtInt(r.days_active)}</td>
+      <td class="num">${fmt(r.hours_offered_wk,2)}</td>
+      <td class="num">${fmt(r.hours_worked_wk,2)}</td>
+      <td class="num">${fmt(r.hours_refused_wk,2)}</td>
+      <td class="num">${r.exception_days > 0 ? '<span class="pill pill-exception">'+r.exception_days+'</span>' : '—'}</td>
+      <td><button class="btn-secondary" onclick='openCtdFromWtd(${JSON.stringify(r.worker_id)}, ${JSON.stringify(r.petition_id||"")})'>CTD</button></td>
+    </tr>
+  `).join('');
+}
+
+window.openCtdFromWtd = function(workerId, petitionId) {
+  window._ctdWorker = workerId;
+  window._ctdPetition = petitionId || null;
+  setTab('ctd');
+  loadCtd(workerId, petitionId || null);
+};
+
+// ────────── CONTRACT TO DATE ──────────
+let ctdSearchTimer = null;
+window.onCtdSearchInput = function() {
+  clearTimeout(ctdSearchTimer);
+  const q = $('ctdSearch').value.trim();
+  if (q.length < 2) { $('ctdResults').style.display='none'; return; }
+  ctdSearchTimer = setTimeout(() => doCtdSearch(q), 220);
+};
+
+async function doCtdSearch(q) {
+  try {
+    const { data, error } = await sb.schema('hris').from('workers')
+      .select('worker_id,employee_code,first_name,last_name,preferred_name,current_petition_id,status')
+      .or(`employee_code.ilike.%${q}%,last_name.ilike.%${q}%,first_name.ilike.%${q}%`)
+      .eq('tenant_id', TENANT_ID)
+      .order('last_name')
+      .limit(20);
+    if (error) throw error;
+    const html = (data||[]).map(w => `
+      <div class="item" onclick='selectCtdWorker(${JSON.stringify(w.worker_id)}, ${JSON.stringify(w.current_petition_id||"")}, ${JSON.stringify((w.preferred_name||w.first_name)+" "+w.last_name)}, ${JSON.stringify(w.employee_code)})'>
+        <strong>${escapeHtml((w.preferred_name||w.first_name)+' '+w.last_name)}</strong>
+        <span class="code"> · ${escapeHtml(w.employee_code||'')} · ${escapeHtml(w.status||'')}</span>
+      </div>
+    `).join('');
+    $('ctdResults').innerHTML = html || '<div class="item muted">No matches</div>';
+    $('ctdResults').style.display = 'block';
+  } catch (e) { console.error(e); }
+}
+
+window.selectCtdWorker = function(workerId, petitionId, label, code) {
+  $('ctdSearch').value = label + ' (' + code + ')';
+  $('ctdResults').style.display='none';
+  window._ctdWorker = workerId;
+  window._ctdPetition = petitionId || null;
+  loadCtd(workerId, petitionId || null);
+};
+
+window.clearCtdSelection = function() {
+  $('ctdSearch').value = ''; window._ctdWorker = null; window._ctdPetition = null;
+  $('ctdKpis').innerHTML = ''; $('ctdSegments').innerHTML = '<p class="empty">Select a worker.</p>';
+  $('ctdTitle').textContent = 'Contract-to-date detail';
+};
+
+async function loadCtd(workerId, petitionId) {
+  $('ctdSegments').innerHTML = '<p class="empty"><span class="spinner"></span> Loading…</p>';
+  try {
+    const { data, error } = await sb.rpc('report_hours_contract_to_date', { p_worker_id: workerId, p_petition_id: petitionId || null, p_as_of: todayISO });
+    if (error) throw error;
+    if (!data || !data.length) { $('ctdSegments').innerHTML = '<p class="empty">No contract data.</p>'; return; }
+    renderCtd(data);
+  } catch (e) {
+    console.error(e);
+    $('ctdSegments').innerHTML = `<p class="empty">Error: ${escapeHtml(e.message||e)}</p>`;
+  }
+}
+
+function renderCtd(rows) {
+  // Sort by effective_start desc; multiple rows = multiple petitions
+  rows.sort((a,b) => (b.effective_start||'').localeCompare(a.effective_start||''));
+  const r = rows[0];
+  $('ctdTitle').textContent = `${r.worker_name || ''} · ${r.worker_code || ''}`;
+
+  $('ctdKpis').innerHTML = `
+    <div class="kpi"><div class="label">Status</div><div class="value status-${r.status||''}">${escapeHtml(r.status||'')}</div></div>
+    <div class="kpi worked"><div class="label">Worked</div><div class="value">${fmt(r.hours_worked_running,0)}</div><div class="sub">of ${fmt(r.floor_running,0)} floor</div></div>
+    <div class="kpi"><div class="label">Offered</div><div class="value">${fmt(r.hours_offered_running,0)}</div><div class="sub">excused ${fmt(r.hours_excused_running,0)}</div></div>
+    <div class="kpi ${Number(r.projected_shortfall_dollars||0)>0?'refused':''}"><div class="label">Projected shortfall</div><div class="value">$${fmt(r.projected_shortfall_dollars,2)}</div><div class="sub">${fmt(r.projected_shortfall_hrs,0)}h</div></div>
+  `;
+
+  const segHtml = rows.map(rr => {
+    const segs = rr.segments || [];
+    const rowsHtml = segs.map(s => `
+      <tr>
+        <td>${escapeHtml(s.week_start)} – ${escapeHtml(s.week_end)}</td>
+        <td>${escapeHtml(s.farm_code||'—')}</td>
+        <td class="num">${fmt(s.week_floor_hrs,1)}</td>
+        <td class="num">${fmt(s.worked_in_week,2)}</td>
+        <td class="num">${fmt(s.excused_in_week,2)}</td>
+        <td class="num">${fmt(s.not_offered_week,2)}</td>
+        <td>${Number(s.worked_in_week||0) + Number(s.excused_in_week||0) >= Number(s.week_floor_hrs||0) ? '<span class="pill pill-worked">met</span>' : '<span class="pill pill-refused">short</span>'}</td>
+      </tr>
+    `).join('');
+    return `
+      <div style="margin-bottom:18px;">
+        <h3 style="font-size:13px; margin-bottom:6px;">${escapeHtml(rr.petition_label||'—')} <span class="muted">· ${escapeHtml(rr.contract_start||'')} → ${escapeHtml(rr.contract_end||'')} · ${rr.is_active_petition ? '<span class="pill pill-worked">active</span>' : '<span class="pill pill-baseline">closed</span>'}</span></h3>
+        <table class="grid">
+          <thead><tr><th>Week</th><th>Farm</th><th class="num">Floor</th><th class="num">Worked</th><th class="num">Excused</th><th class="num">Not offered</th><th>Status</th></tr></thead>
+          <tbody>${rowsHtml || '<tr><td colspan="7" class="empty">No segments.</td></tr>'}</tbody>
+        </table>
+      </div>
+    `;
+  }).join('');
+  $('ctdSegments').innerHTML = segHtml;
+}
+
+// ────────── EXCEPTION QUEUE ──────────
+window.loadExc = async function() {
+  const from = $('excFrom').value, to = $('excTo').value;
+  if (!from || !to) { showBanner('Pick a from/to range.', 'error'); return; }
+  $('excBody').innerHTML = '<tr><td colspan="8" class="empty"><span class="spinner"></span> Loading…</td></tr>';
+  try {
+    const f = buildFilter(); f.only_exceptions = true;
+    const { data, error } = await sb.rpc('list_hours_offered_daily', { p_from: from, p_to: to, p_filter: f });
+    if (error) throw error;
+    renderExc(data || []);
+  } catch (e) {
+    console.error(e);
+    $('excBody').innerHTML = `<tr><td colspan="8" class="empty">Error: ${escapeHtml(e.message||e)}</td></tr>`;
+  }
+};
+
+async function renderExc(rows) {
+  $('excCount').textContent = String(rows.length);
+  const days = new Set(rows.map(r => r.work_date)).size;
+  $('excKpis').innerHTML = `
+    <div class="kpi exception"><div class="label">Exception rows</div><div class="value">${fmtInt(rows.length)}</div></div>
+    <div class="kpi"><div class="label">Days covered</div><div class="value">${fmtInt(days)}</div></div>
+  `;
+  if (!rows.length) { $('excBody').innerHTML = '<tr><td colspan="8" class="empty">No exceptions in range.</td></tr>'; return; }
+
+  // Resolve worker/farm/crew names in batch
+  const workerIds = [...new Set(rows.map(r => r.worker_id))];
+  const farmIds   = [...new Set(rows.map(r => r.farm_id).filter(Boolean))];
+  const crewIds   = [...new Set(rows.map(r => r.home_crew_id).filter(Boolean))];
+  const petIds    = [...new Set(rows.map(r => r.petition_id).filter(Boolean))];
+
+  const [wq, fq, cq, pq] = await Promise.all([
+    workerIds.length ? sb.schema('hris').from('workers').select('worker_id,employee_code,first_name,preferred_name,last_name').in('worker_id', workerIds) : { data: [] },
+    farmIds.length   ? sb.schema('hris').from('farms').select('farm_id,farm_name').in('farm_id', farmIds) : { data: [] },
+    crewIds.length   ? sb.schema('payroll').from('home_crews').select('home_crew_id,home_crew_label').in('home_crew_id', crewIds) : { data: [] },
+    petIds.length    ? sb.schema('hris').from('petitions').select('petition_id,display_label,petition_number').in('petition_id', petIds) : { data: [] }
+  ]);
+  const wMap = Object.fromEntries((wq.data||[]).map(w => [w.worker_id, w]));
+  const fMap = Object.fromEntries((fq.data||[]).map(f => [f.farm_id, f.farm_name]));
+  const cMap = Object.fromEntries((cq.data||[]).map(c => [c.home_crew_id, c.home_crew_label]));
+  const pMap = Object.fromEntries((pq.data||[]).map(p => [p.petition_id, p.display_label || p.petition_number]));
+
+  $('excBody').innerHTML = rows.slice(0, 500).map(r => {
+    const w = wMap[r.worker_id] || {};
+    const name = ((w.preferred_name || w.first_name || '') + ' ' + (w.last_name||'')).trim();
+    return `
+      <tr>
+        <td>${escapeHtml(r.work_date)}</td>
+        <td>${escapeHtml(name)}</td>
+        <td class="muted">${escapeHtml(w.employee_code||'')}</td>
+        <td>${escapeHtml(fMap[r.farm_id]||'—')}</td>
+        <td>${escapeHtml(cMap[r.home_crew_id]||'—')}</td>
+        <td class="muted">${escapeHtml(pMap[r.petition_id]||'—')}</td>
+        <td class="num">${fmt(r.hours_worked,2)}</td>
+        <td><button class="btn-secondary" onclick='alert("Log reason for "+ ${JSON.stringify(name)} +" on "+ ${JSON.stringify(r.work_date)}+" — open FieldPay modal (TODO)")'>Log reason</button></td>
+      </tr>
+    `;
+  }).join('');
+  if (rows.length > 500) {
+    $('excBody').insertAdjacentHTML('beforeend', `<tr><td colspan="8" class="muted" style="text-align:center;">… ${rows.length-500} more rows (use filters to narrow)</td></tr>`);
+  }
+}
+
+// ────────── Init ──────────
+window.addEventListener('DOMContentLoaded', async () => {
+  // Default dates: yesterday for daily, today for WTD, last 7d for exception
+  const d = new Date();
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  const w = new Date(); w.setDate(w.getDate() - 7);
+  $('dailyDate').value = y.toISOString().slice(0,10);
+  $('wtdDate').value   = d.toISOString().slice(0,10);
+  $('excFrom').value   = w.toISOString().slice(0,10);
+  $('excTo').value     = d.toISOString().slice(0,10);
+
+  await loadFilters();
+  loadDaily();
+});
+</script>
+</body>
+</html>
