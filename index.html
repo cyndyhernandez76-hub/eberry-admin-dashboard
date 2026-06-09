@@ -15,11 +15,22 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <title>eBerry HRIS — ERP Suite by Field Pay Solutions</title>
     <meta name="description" content="ERP Suite by Field Pay Solutions — integrated HCM, Payroll, Finance, Compliance, Operations, and Assets. eBerry Harvest Co. LLC tenant deployment." />
-    <script type="module" crossorigin src="./assets/index-B2FlINPH.js"></script>
+    <script type="module" crossorigin src="./assets/index-B4RqdYl5.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/supabase-XQdB1tDL.js">
-    <link rel="stylesheet" crossorigin href="./assets/index-CASIBmXR.css">
+    <link rel="stylesheet" crossorigin href="./assets/index-DgyUT59s.css">
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // SPA fallback restoration (pairs with public/404.html). Runs before the
+      // module bundle so React Router sees the originally requested deep link.
+      (function () {
+        var redirect = sessionStorage.redirect;
+        delete sessionStorage.redirect;
+        if (redirect && redirect !== location.href) {
+          history.replaceState(null, null, redirect);
+        }
+      })();
+    </script>
   </body>
 </html>
