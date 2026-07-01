@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBerry — Import Payments</title>
+<link rel="icon" href="/eberry-admin-dashboard/favicon.svg">
+<meta name="theme-color" content="#6b8f71">
+<!--
+  Import a completed payment report (Jona → Jackie) and reconcile it.
+  Parses XLSX/CSV client-side with SheetJS, dry-run matches against
+  accounting.bills, then calls public.admin_import_bill_payments(p_rows).
+  CONFIG: Expects window.__APP_CONFIG__ = { SUPABASE_URL, SUPABASE_ANON_KEY }
+-->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f7f4;color:#1a2b1c;font-size:14px;line-height:1.5}
+:root{
+--sage:#6b8f71;--sage-dark:#4f6e54;--sage-light:#eaf2eb;
+--sage-border:#b5c9b8;--sage-bg:#f2f7f3;--sage-muted:#6b8a6e;
+--text:#1a2b1c;--text2:#4a5e4c;--text3:#7a907c;
+--border:#d4e4d6;--surface:#ffffff;--radius:8px;--radius-lg:12px
+}
+.container{max-width:1300px;margin:0 auto;padding:1.25rem}
+.topbar{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;gap:12px;flex-wrap:wrap}
+.topbar-left h1{font-size:21px;font-weight:700;color:var(--text)}
+.topbar-left p{font-size:13px;color:var(--text3);margin-top:2px}
+.btn-launcher{display:inline-flex;align-items:center;gap:6px;background:var(--sage-light);color:var(--sage-dark);border:1px solid var(--sage-border);padding:0 12px;height:30px;border-radius:var(--radius);font-size:12px;font-weight:500;text-decoration:none;margin-bottom:6px}
+.btn-launcher:hover{background:#dde8df}
+.topbar-right{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.auth-pill{font-size:11px;color:var(--text3);background:var(--sage-light);border:1px solid var(--sage-border);border-radius:12px;padding:3px 10px;font-weight:500}
+button{cursor:pointer;font-family:inherit;font-size:14px;border-radius:var(--radius);transition:all .15s}
+.btn-primary{background:var(--sage);color:#fff;border:none;padding:0 16px;height:36px;font-weight:500}
+.btn-primary:hover{background:var(--sage-dark)}
+.btn-primary:disabled{background:#b5c9b8;cursor:not-allowed}
+.btn-secondary{background:var(--surface);color:var(--text2);border:1px solid var(--sage-border);padding:0 14px;height:36px}
+.btn-secondary:hover{background:var(--sage-light)}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:15px;font-weight:700;margin-bottom:4px}
+.card .hint{font-size:12px;color:var(--text3);margin-bottom:12px}
+
+.dropzone{border:2px dashed var(--sage-border);border-radius:var(--radius);background:var(--sage-bg);color:var(--text3);padding:28px;text-align:center;cursor:pointer;transition:all .15s}
+.dropzone:hover{border-color:var(--sage);color:var(--sage-dark)}
+.dropzone.dragover{border-color:var(--sage);background:#e6f0e8;color:var(--sage-dark)}
+.dropzone.has-file{border-style:solid;border-color:var(--sage);background:#f3f8f4;color:var(--text)}
+.dropzone .file-name{font-weight:600;color:var(--text)}
+.dropzone .file-meta{font-size:11px;color:var(--text3);margin-top:2px}
+
+.summary-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.pill{font-size:12px;font-weight:600;padding:4px 10px;border-radius:12px;border:1px solid var(--sage-border);background:var(--sage-light);color:var(--sage-dark)}
+.pill.ok{background:#e8f5e9;border-color:#a5d6a7;color:#1b5e20}
+.pill.warn{background:#fff8e8;border-color:#f0d080;color:#b07d00}
+.pill.err{background:#fdecec;border-color:#f5b5b5;color:#c62828}
+
+.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:var(--radius);margin-top:10px}
+table{width:100%;border-collapse:collapse}
+thead{background:var(--sage-bg)}
+th{padding:9px 11px;text-align:left;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:8px 11px;border-bottom:1px solid #edf2ed;vertical-align:top;font-size:13px}
+tr:last-child td{border-bottom:none}
+tr.row-error td{background:#fdf2f2}
+tr.row-warn td{background:#fffbf0}
+.amount{text-align:right;font-family:monospace;font-weight:600}
+.match{font-size:12px;font-weight:600}
+.match.ok{color:#1b5e20}.match.warn{color:#b07d00}.match.err{color:#c62828}
+.mono{font-family:monospace;font-size:12px}
+
+.banner{padding:12px 16px;border-radius:var(--radius);margin-bottom:14px;font-size:13px;display:none}
+.banner.show{display:block}
+.banner.error{background:#fff5f5;border:1px solid #f5c6c6;color:#c62828}
+.banner.success{background:#e8f5e9;border:1px solid #a5d6a7;color:#1b5e20}
+.banner.info{background:#e3f2fd;border:1px solid #90caf9;color:#0d47a1}
+.loader{display:inline-block;width:14px;height:14px;border:2px solid var(--sage-border);border-top-color:var(--sage);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.muted{color:var(--text3)}
+.hidden{display:none}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="topbar">
+    <div class="topbar-left">
+      <a href="/eberry-admin-dashboard/" class="btn-launcher">← Dashboard</a>
+      <h1>Import Payments</h1>
+      <p>Reconcile Jona's completed payment report back into the ledger</p>
+    </div>
+    <div class="topbar-right">
+      <span class="auth-pill" id="auth-pill">…</span>
+      <a class="btn-launcher" href="/eberry-admin-dashboard/accounting/ap-report/">← AP Report</a>
+      <a class="btn-launcher" href="/eberry-admin-dashboard/accounting/payments/import/history/">Import history →</a>
+    </div>
+  </div>
+
+  <div id="banner" class="banner"></div>
+
+  <div class="card">
+    <h2>1 · Get the template</h2>
+    <div class="hint">Send this to Jona. Required columns are marked with *. Payment Method must be one of: check, ach, wire, debit_card, credit_card, cash, other.</div>
+    <button class="btn-secondary" id="template-btn">Download blank template (.xlsx)</button>
+  </div>
+
+  <div class="card">
+    <h2>2 · Upload the completed report</h2>
+    <div class="hint">Accepts .xlsx or .csv. Parsed in your browser — nothing is sent until you import.</div>
+    <div class="dropzone" id="dropzone">
+      <div id="dz-text">Drop .xlsx / .csv here, or click to choose</div>
+      <input id="file-input" type="file" accept=".xlsx,.xls,.csv" class="hidden">
+    </div>
+  </div>
+
+  <div class="card hidden" id="preview-card">
+    <h2>3 · Dry-run preview</h2>
+    <div class="hint">Each row is matched against open bills. Only valid rows are imported.</div>
+    <div class="summary-row" id="preview-summary"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th>Invoice #</th>
+            <th>Vendor</th>
+            <th style="text-align:right">Amount Paid</th>
+            <th>Date</th>
+            <th>Method</th>
+            <th>Check/Ref</th>
+            <th>Match status</th>
+          </tr>
+        </thead>
+        <tbody id="preview-rows"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" id="import-btn" disabled>Import valid rows</button>
+      <span class="muted" id="import-note"></span>
+    </div>
+  </div>
+
+  <div class="card hidden" id="result-card">
+    <h2>4 · Import result</h2>
+    <div class="summary-row" id="result-summary"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th>Invoice #</th>
+            <th>Status</th>
+            <th>New bill status</th>
+            <th style="text-align:right">New amount due</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody id="result-rows"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn-secondary" id="result-xlsx-btn">Export result to Excel</button>
+      <a class="btn-launcher hidden" id="run-link" href="#">View saved run →</a>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import * as XLSX from 'https://esm.sh/xlsx-js-style@1.2.0';
+
+const cfg = window.__APP_CONFIG__ || {};
+const SUPABASE_URL = cfg.SUPABASE_URL || 'https://opdwtijyropzoyeseoij.supabase.co';
+const SUPABASE_KEY = cfg.SUPABASE_ANON_KEY || '';
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+});
+
+const METHODS = ['check','ach','wire','debit_card','credit_card','cash','other'];
+let parsedRows = [];   // {row, invoice_number, vendor_name, amount_paid, date_paid, payment_method, check_number, reference, notes, _match}
+let fileName = '';
+
+function fmtMoney(n){ if(n==null||n==='') return '—'; return Number(n).toLocaleString('en-US',{style:'currency',currency:'USD'}); }
+function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function showBanner(msg,kind='info'){ const el=document.getElementById('banner'); el.textContent=msg; el.className=`banner show ${kind}`; }
+function hideBanner(){ document.getElementById('banner').classList.remove('show'); }
+function today(){ return new Date().toISOString().slice(0,10); }
+
+// ─────────── Template ───────────
+const TEMPLATE_HEADERS = ['Vendor Name','Invoice Number *','Amount Paid *','Date Paid *','Payment Method *','Check Number or Confirmation Number','Notes'];
+function downloadTemplate(){
+  const aoa = [
+    TEMPLATE_HEADERS,
+    ['Acme Feed Co','12345',1234.56,'2026-07-08','check','1088','Partial — remainder deferred to 8/1'],
+    ['', '', '', '', '', '', '']
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:24},{wch:18},{wch:14},{wch:13},{wch:18},{wch:30},{wch:34}];
+  for (let c=0;c<TEMPLATE_HEADERS.length;c++){
+    const ref = XLSX.utils.encode_cell({r:0,c});
+    ws[ref].s = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'4F6E54'}} };
+  }
+  // Data-validation dropdown for Payment Method (col E, rows 2..200)
+  ws['!dataValidation'] = [{ sqref:'E2:E200', type:'list', formula1:'"'+METHODS.join(',')+'"' }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Payments');
+  XLSX.writeFile(wb, 'Payment_Import_Template.xlsx');
+}
+
+// ─────────── Parse ───────────
+function normKey(k){ return String(k||'').toLowerCase().replace(/\*/g,'').replace(/[^a-z0-9]/g,''); }
+function mapHeader(k){
+  const n = normKey(k);
+  if (n.includes('vendor')) return 'vendor_name';
+  if (n.includes('invoice')) return 'invoice_number';
+  if (n.includes('amount')) return 'amount_paid';
+  if (n.includes('date')) return 'date_paid';
+  if (n.includes('method')) return 'payment_method';
+  if (n.includes('check') || n.includes('confirmation') || n==='reference' || n==='ref') return 'check_number';
+  if (n.includes('note')) return 'notes';
+  return null;
+}
+function toDateStr(v){
+  if (v == null || v === '') return '';
+  if (v instanceof Date) return v.toISOString().slice(0,10);
+  if (typeof v === 'number'){ // Excel serial
+    const d = XLSX.SSF ? XLSX.SSF.parse_date_code(v) : null;
+    if (d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+  }
+  return String(v).slice(0,10);
+}
+
+async function handleFile(file){
+  fileName = file.name;
+  hideBanner();
+  document.getElementById('dz-text').innerHTML =
+    `<span class="file-name">${escapeHtml(file.name)}</span><div class="file-meta">${(file.size/1024).toFixed(1)} KB · parsing…</div>`;
+  document.getElementById('dropzone').classList.add('has-file');
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:'array', cellDates:true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(ws, { defval:'' });
+    if (!raw.length){ showBanner('No data rows found in the file.', 'error'); return; }
+    parsedRows = raw.map((r, i) => {
+      const out = { row:i+1, vendor_name:'', invoice_number:'', amount_paid:'', date_paid:'', payment_method:'', check_number:'', notes:'' };
+      for (const k of Object.keys(r)){
+        const field = mapHeader(k);
+        if (field) out[field] = r[k];
+      }
+      out.date_paid = toDateStr(out.date_paid);
+      out.payment_method = String(out.payment_method||'').trim().toLowerCase();
+      out.invoice_number = String(out.invoice_number||'').trim();
+      out.vendor_name = String(out.vendor_name||'').trim();
+      out.check_number = String(out.check_number||'').trim();
+      out.notes = String(out.notes||'').trim();
+      const amt = Number(String(out.amount_paid).replace(/[$,]/g,''));
+      out.amount_paid = Number.isFinite(amt) ? amt : '';
+      return out;
+    }).filter(r => r.invoice_number || r.amount_paid || r.vendor_name);
+    document.getElementById('dz-text').innerHTML =
+      `<span class="file-name">${escapeHtml(file.name)}</span><div class="file-meta">${parsedRows.length} rows parsed</div>`;
+    await dryRun();
+  } catch (e){
+    showBanner('Failed to parse file: ' + (e.message||e), 'error');
+  }
+}
+
+// ─────────── Dry-run match ───────────
+async function dryRun(){
+  const nums = [...new Set(parsedRows.map(r => r.invoice_number).filter(Boolean))];
+  let bills = [];
+  if (nums.length){
+    const list = nums.map(n => `"${String(n).replace(/"/g,'')}"`).join(',');
+    const { data, error } = await sb.schema('accounting').from('bills')
+      .select('bill_id,bill_number,internal_ref,status,amount_due,total_amount,vendor_id')
+      .or(`bill_number.in.(${list}),internal_ref.in.(${list})`);
+    if (error){ showBanner('Could not verify against bills: ' + error.message, 'error'); }
+    else bills = data || [];
+  }
+  const byNum = new Map();
+  for (const b of bills){
+    if (b.bill_number) byNum.set(String(b.bill_number), b);
+    if (b.internal_ref) byNum.set(String(b.internal_ref), b);
+  }
+
+  for (const r of parsedRows){
+    const errs = [];
+    if (!r.invoice_number) errs.push('missing invoice number');
+    if (!(Number(r.amount_paid) > 0)) errs.push('missing/invalid amount');
+    if (!r.date_paid) errs.push('missing date');
+    if (r.payment_method && !METHODS.includes(r.payment_method)) errs.push('bad method');
+    if ((r.payment_method||'check')==='check' && !r.check_number) errs.push('check # required for method=check');
+
+    const bill = byNum.get(r.invoice_number);
+    let level='ok', text='';
+    if (errs.length){ level='err'; text='✗ ' + errs.join('; '); }
+    else if (!bill){ level='err'; text='✗ No matching bill'; }
+    else if (!['open','partial','overdue'].includes(bill.status)){ level='err'; text=`⚠ Bill already ${bill.status}`; }
+    else if (Number(r.amount_paid) > Number(bill.amount_due||0) + 0.005){
+      level='warn'; text=`⚠ Amount exceeds balance (${fmtMoney(bill.amount_due)} due)`;
+    } else {
+      level='ok'; text=`✓ Matched bill ${bill.bill_number||bill.internal_ref} (${bill.status}, ${fmtMoney(bill.amount_due)} due)`;
+    }
+    r._match = { level, text, bill };
+  }
+  renderPreview();
+}
+
+function renderPreview(){
+  const validCount = parsedRows.filter(r => r._match.level !== 'err').length;
+  const errCount = parsedRows.filter(r => r._match.level === 'err').length;
+  const warnCount = parsedRows.filter(r => r._match.level === 'warn').length;
+  document.getElementById('preview-summary').innerHTML =
+    `<span class="pill">${parsedRows.length} rows</span>` +
+    `<span class="pill ok">${validCount} importable</span>` +
+    (warnCount ? `<span class="pill warn">${warnCount} warning</span>` : '') +
+    (errCount ? `<span class="pill err">${errCount} blocked</span>` : '');
+
+  document.getElementById('preview-rows').innerHTML = parsedRows.map(r => {
+    const cls = r._match.level==='err' ? 'row-error' : (r._match.level==='warn' ? 'row-warn' : '');
+    return `<tr class="${cls}">
+      <td>${r.row}</td>
+      <td class="mono">${escapeHtml(r.invoice_number||'—')}</td>
+      <td>${escapeHtml(r.vendor_name||'—')}</td>
+      <td class="amount">${fmtMoney(r.amount_paid)}</td>
+      <td>${escapeHtml(r.date_paid||'—')}</td>
+      <td>${escapeHtml(r.payment_method||'check')}</td>
+      <td class="mono">${escapeHtml(r.check_number||'—')}</td>
+      <td class="match ${r._match.level}">${escapeHtml(r._match.text)}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('preview-card').classList.remove('hidden');
+  const importable = parsedRows.filter(r => r._match.level !== 'err');
+  const btn = document.getElementById('import-btn');
+  btn.disabled = importable.length === 0;
+  btn.textContent = `Import ${importable.length} valid row${importable.length===1?'':'s'}`;
+  document.getElementById('import-note').textContent =
+    errCount ? `${errCount} blocked row${errCount===1?'':'s'} will be skipped.` : '';
+}
+
+// ─────────── Import ───────────
+async function doImport(){
+  const importable = parsedRows.filter(r => r._match.level !== 'err');
+  if (!importable.length) return;
+  const payload = importable.map(r => ({
+    invoice_number: r.invoice_number,
+    vendor_name: r.vendor_name,
+    amount_paid: r.amount_paid,
+    date_paid: r.date_paid,
+    payment_method: r.payment_method || 'check',
+    check_number: r.check_number || null,
+    reference: r.check_number || null,
+    notes: r.notes || null
+  }));
+  const btn = document.getElementById('import-btn');
+  btn.disabled = true;
+  btn.innerHTML = `<span class="loader" style="border-top-color:#fff;border-color:rgba(255,255,255,.4)"></span> Importing…`;
+  hideBanner();
+
+  const { data, error } = await sb.rpc('admin_import_bill_payments', { p_rows: payload, p_filename: fileName });
+  if (error){
+    showBanner('Import failed: ' + error.message, 'error');
+    btn.disabled = false; btn.textContent = `Import ${importable.length} valid rows`;
+    return;
+  }
+  renderResult(data);
+  showBanner(`Imported ${data.ok_count} of ${data.total} rows (${data.fail_count} failed).`,
+             data.fail_count ? 'info' : 'success');
+  btn.textContent = `Import ${importable.length} valid rows`;
+}
+
+let lastResult = null;
+function renderResult(res){
+  lastResult = res;
+  document.getElementById('result-summary').innerHTML =
+    `<span class="pill">${res.total} submitted</span>` +
+    `<span class="pill ok">${res.ok_count} recorded</span>` +
+    (res.fail_count ? `<span class="pill err">${res.fail_count} failed</span>` : '');
+  const rows = res.results || [];
+  document.getElementById('result-rows').innerHTML = rows.map(r => `
+    <tr class="${r.status==='ok'?'':'row-error'}">
+      <td>${r.row}</td>
+      <td class="mono">${escapeHtml(r.invoice_number||'—')}</td>
+      <td class="match ${r.status==='ok'?'ok':'err'}">${r.status==='ok'?'✓ ok':'✗ error'}</td>
+      <td>${escapeHtml(r.new_status||'—')}</td>
+      <td class="amount">${r.new_amount_due!=null?fmtMoney(r.new_amount_due):'—'}</td>
+      <td class="muted">${escapeHtml(r.error||'')}</td>
+    </tr>`).join('');
+  document.getElementById('result-card').classList.remove('hidden');
+  if (res.run_id){
+    const link = document.getElementById('run-link');
+    link.href = `/eberry-admin-dashboard/accounting/payments/import/history/?run=${encodeURIComponent(res.run_id)}`;
+    link.classList.remove('hidden');
+  }
+  document.getElementById('result-card').scrollIntoView({ behavior:'smooth' });
+}
+
+function exportResult(){
+  if (!lastResult) return;
+  const aoa = [
+    ['Payment Import Result — ' + today() + (fileName?(' — '+fileName):'')],
+    [],
+    ['Row','Invoice #','Status','New bill status','New amount due','Error'],
+    ...(lastResult.results||[]).map(r => [
+      r.row, r.invoice_number||'', r.status||'', r.new_status||'',
+      r.new_amount_due!=null?Number(r.new_amount_due):'', r.error||''
+    ])
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:6},{wch:18},{wch:10},{wch:16},{wch:16},{wch:40}];
+  for (let c=0;c<6;c++){
+    const ref = XLSX.utils.encode_cell({r:2,c});
+    if (ws[ref]) ws[ref].s = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'4F6E54'}} };
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Result');
+  XLSX.writeFile(wb, `Payment_Import_Result_${today()}.xlsx`);
+}
+
+// ─────────── Dropzone wiring ───────────
+function attachDropzone(){
+  const dz = document.getElementById('dropzone');
+  const input = document.getElementById('file-input');
+  dz.onclick = () => input.click();
+  input.onchange = e => { if (e.target.files[0]) handleFile(e.target.files[0]); };
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+  });
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const { data:{ user } } = await sb.auth.getUser();
+    document.getElementById('auth-pill').textContent = user?.email || 'Not signed in';
+    if (!user) showBanner('You are not signed in. Sign in before importing.', 'error');
+  } catch(_) { document.getElementById('auth-pill').textContent = 'Auth error'; }
+
+  document.getElementById('template-btn').onclick = downloadTemplate;
+  document.getElementById('import-btn').onclick = doImport;
+  document.getElementById('result-xlsx-btn').onclick = exportResult;
+  attachDropzone();
+});
+</script>
+</body>
+</html>

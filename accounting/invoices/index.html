@@ -60,6 +60,11 @@ select:focus{border-color:var(--sage)}
 .cat-tabs{display:flex;gap:5px;flex-wrap:wrap}
 .cat-tab{padding:5px 14px;border-radius:20px;font-size:12px;font-weight:500;border:1px solid var(--sage-border);background:var(--surface);color:var(--text2);cursor:pointer}
 .cat-tab:hover,.cat-tab.on{background:var(--sage);color:#fff;border-color:var(--sage)}
+.cat-tab.quick{background:var(--sage-light);color:var(--sage-dark);border-color:var(--sage-border);font-weight:600}
+.cat-tab.quick.on{background:var(--sage-dark);color:#fff;border-color:var(--sage-dark)}
+.chip-badge{display:inline-block;min-width:16px;padding:0 5px;border-radius:9px;background:rgba(0,0,0,.12);font-size:11px;font-weight:700;text-align:center;margin-left:2px}
+.cat-tab.quick.on .chip-badge{background:rgba(255,255,255,.28)}
+.quick-sep{display:inline-block;width:1px;height:20px;background:var(--sage-border);margin:0 4px;align-self:center}
 
 /* Table */
 .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
@@ -129,6 +134,8 @@ tbody tr.active td{background:#eef7ef}
 .source-pos ul{list-style:none;font-size:12px;color:var(--text2);font-family:monospace}
 .source-pos li{padding:3px 0;display:flex;justify-content:space-between;gap:10px}
 .source-pos li .po{color:var(--sage-dark);font-weight:600}
+.source-pos li a.po{text-decoration:none;border-bottom:1px dotted var(--sage-dark)}
+.source-pos li a.po:hover{color:var(--sage);border-bottom-style:solid}
 
 .notes-box{background:#fffbf0;border:1px solid #f0d080;border-radius:var(--radius);padding:10px 14px;font-size:12px;color:var(--text2);margin-top:14px;line-height:1.5}
 .notes-box .lbl{font-size:10px;font-weight:700;color:#b07d00;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
@@ -323,6 +330,7 @@ async function loadInvoices() {
     ...r,
     customer_name: r.customer?.dba_name || r.customer?.legal_name || r.customer?.customer_code || '—',
     is_pt: (r.invoice_number || '').startsWith('PT-')
+           || /pass-through/i.test(r.notes || '')
   }));
 
   renderStats();
@@ -353,12 +361,35 @@ function renderStatusTabs() {
   const statuses = ['all', 'draft', 'sent', 'partial', 'paid', 'void'];
   const counts = { all: allInvoices.length };
   for (const s of statuses.slice(1)) counts[s] = allInvoices.filter(i => i.status === s).length;
-  document.getElementById('status-tabs').innerHTML = statuses.map(s => {
+  const draftCount = counts.draft || 0;
+  const ptCount = allInvoices.filter(i => i.is_pt).length;
+
+  // Quick-filter chips (Drafts / Pass-Through) with live count badges, then the
+  // full status tab row. Default status is 'all' so drafts are visible.
+  const quickHtml =
+    `<button class="cat-tab quick ${currentStatus==='draft'?'on':''}" data-quick="drafts">Drafts <span class="chip-badge">${draftCount}</span></button>` +
+    `<button class="cat-tab quick ${currentType==='PT'?'on':''}" data-quick="pt">Pass-Through <span class="chip-badge">${ptCount}</span></button>` +
+    `<span class="quick-sep"></span>`;
+  const statusHtml = statuses.map(s => {
     const label = s === 'all' ? 'All' : STATUS_LABELS[s]?.label || s;
     return `<button class="cat-tab ${s===currentStatus?'on':''}" data-st="${s}">${label} <span style="opacity:.7">${counts[s]}</span></button>`;
   }).join('');
-  document.querySelectorAll('.cat-tab').forEach(b => b.onclick = () => {
+  document.getElementById('status-tabs').innerHTML = quickHtml + statusHtml;
+
+  document.querySelectorAll('#status-tabs .cat-tab[data-st]').forEach(b => b.onclick = () => {
     currentStatus = b.dataset.st;
+    renderStatusTabs();
+    render();
+  });
+  document.querySelectorAll('#status-tabs .cat-tab[data-quick]').forEach(b => b.onclick = () => {
+    if (b.dataset.quick === 'drafts') {
+      currentStatus = currentStatus === 'draft' ? 'all' : 'draft';
+      currentType = '';
+    } else { // pt
+      currentType = currentType === 'PT' ? '' : 'PT';
+      currentStatus = 'all';
+    }
+    document.getElementById('type-filter').value = currentType;
     renderStatusTabs();
     render();
   });
@@ -467,13 +498,30 @@ function renderPreview(inv) {
           <td class="r">${fmtMoney(l.amount)}</td>
         </tr>`).join('');
 
-  const sourceHtml = (inv.source_pos && inv.source_pos.length > 0) ? `
+  // Source PO(s): prefer the structured source_pos array; otherwise parse the
+  // "Pass-through from PO <number>" convention out of the notes. Each PO links
+  // back to its detail page in the main app.
+  let sourcePos = (inv.source_pos && inv.source_pos.length > 0)
+    ? inv.source_pos.slice()
+    : [];
+  if (sourcePos.length === 0 && inv.notes) {
+    const seen = new Set();
+    const re = /Pass-through from PO\s+([A-Za-z0-9-]+)/gi;
+    let m;
+    while ((m = re.exec(inv.notes)) !== null) {
+      const num = m[1];
+      if (!seen.has(num)) { seen.add(num); sourcePos.push({ po_number: num }); }
+    }
+  }
+  const sourceHtml = sourcePos.length > 0 ? `
     <div class="source-pos">
       <div class="lbl">Source Purchase Orders</div>
       <ul>
-        ${inv.source_pos.map(p => `
-          <li><span class="po">${escapeHtml(p.po_number)}</span> <span>${escapeHtml(p.vendor_name || '—')}</span> <span>${fmtMoney(p.total_amount)}</span></li>
-        `).join('')}
+        ${sourcePos.map(p => {
+          const id = p.po_id || p.po_number;
+          const href = `/eberry-admin-dashboard/procurement/po/${encodeURIComponent(id)}`;
+          return `<li><a class="po" href="${href}">${escapeHtml(p.po_number || id)}</a> <span>${escapeHtml(p.vendor_name || '—')}</span> <span>${p.total_amount != null ? fmtMoney(p.total_amount) : ''}</span></li>`;
+        }).join('')}
       </ul>
     </div>` : '';
 
